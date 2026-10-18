@@ -20,6 +20,9 @@ TIKTOK_WIDTH = 1080
 TIKTOK_HEIGHT = 1920
 TIKTOK_FPS = 30
 _FALA = re.compile(r"(?im)^fala:\s*(.+)$")
+_SECTION = re.compile(
+    r"(?im)^(?:gancho \(0-3s\)|problema \(3-10s\)|solução \(10-25s\)|cta \(25-30s\)):\s*(.+)$"
+)
 Synthesizer = Callable[[str, Path], Path]
 
 
@@ -104,8 +107,11 @@ def _script_text(script: str | object) -> str:
 
 
 def _spoken_text(script: str) -> str:
-    lines = [match.group(1).strip() for match in _FALA.finditer(script)]
-    spoken = " ".join(line for line in lines if line)
+    sections = [match.group(1).strip() for match in _SECTION.finditer(script)]
+    spoken = " ".join(line for line in sections if line)
+    if not spoken:
+        lines = [match.group(1).strip() for match in _FALA.finditer(script)]
+        spoken = " ".join(line for line in lines if line)
     if not spoken:
         spoken = script.strip()
     if not spoken:
