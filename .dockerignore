@@ -1,0 +1,7 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+.env
+TIKTOK_STORAGE_STATE.json
+auth_tiktok.py
