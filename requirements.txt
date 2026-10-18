@@ -7,4 +7,4 @@ schedule==1.2.2
 # Cliente OpenAI-compatível para a API da xAI/Grok
 openai==3.35.1
 # Automação do navegador
-playwright==1.64.0
+playwright==1.63.0
