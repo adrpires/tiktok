@@ -1,5 +1,7 @@
 # Dependências do projeto de automação de vídeo
 moviepy==2.2.1
+# Narração em português do Brasil
+gTTS==2.5.4
 requests==2.34.2
 schedule==1.2.2
 # Cliente OpenAI-compatível para a API da xAI/Grok
