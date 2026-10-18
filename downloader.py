@@ -1,4 +1,4 @@
-"""Baixa vídeos de fundo curtos e verticais na API gratuita do Pexels."""
+"""Baixa vídeos de fundo verticais na API do Pixabay."""
 
 from __future__ import annotations
 
@@ -12,14 +12,12 @@ from typing import Sequence
 
 import requests
 
-PEXELS_SEARCH_URL = "https://api.pexels.com/v1/videos/search"
-# 9:16. O Pexels só filtra retrato, paisagem ou quadrado; a proporção é conferida aqui.
-TARGET_RATIO = 9 / 16
-RATIO_TOLERANCE = 0.02
+PIXABAY_SEARCH_URL = "https://pixabay.com/api/videos/"
+RENDITIONS = ("large", "medium", "small", "tiny")
 MAX_DURATION_SECONDS = 30
-MIN_HEIGHT = 1280
 TARGET_HEIGHT = 1920
 KEYWORDS_PER_VIDEO = 5
+PER_PAGE = 50
 
 
 @dataclass(frozen=True)
@@ -37,11 +35,11 @@ def download_backgrounds(
     directory: Path | None = None,
     session: requests.Session | None = None,
 ) -> BackgroundVideos:
-    """Baixa um vídeo curto 9:16 para cada uma das 5 palavras-chave.
+    """Baixa um MP4 vertical do Pixabay para cada uma das 5 palavras-chave.
 
-    As palavras-chave são as mesmas devolvidas por ``generate_script``.
-    Os arquivos ficam em uma pasta temporária até o chamador apagá-la.
-    A chave da API gratuita do Pexels vem de ``PEXELS_API_KEY``.
+    A busca usa ``video_type="film"`` e ``orientation="vertical"``.
+    Os arquivos ficam na pasta temporária do sistema. No container Docker,
+    essa pasta é ``/tmp``. A chave vem de ``PIXABAY_API_KEY``.
     """
     cleaned = _clean_keywords(keywords)
     key = _api_key(api_key)
@@ -70,9 +68,9 @@ def _clean_keywords(keywords: Sequence[str]) -> tuple[str, ...]:
 
 
 def _api_key(api_key: str | None) -> str:
-    key = (api_key if api_key is not None else os.environ.get("PEXELS_API_KEY", "")).strip()
+    key = (api_key if api_key is not None else os.environ.get("PIXABAY_API_KEY", "")).strip()
     if not key:
-        raise RuntimeError("Defina PEXELS_API_KEY com a chave gratuita da API do Pexels.")
+        raise RuntimeError("Defina PIXABAY_API_KEY com a chave da API do Pixabay.")
     return key
 
 
@@ -84,13 +82,13 @@ def _find_video(
 ) -> tuple[int, str]:
     for page in (1, 2):
         payload = _search(session, api_key, keyword, page)
-        chosen = _select_video(payload.get("videos") or [], used_ids)
+        chosen = _select_video(payload.get("hits") or [], used_ids)
         if chosen is not None:
             return chosen
-        if not payload.get("next_page"):
+        if not _has_next_page(payload, page):
             break
     raise RuntimeError(
-        f"O Pexels não tem um vídeo curto 9:16 para a palavra-chave {keyword!r}."
+        f"O Pixabay não tem um vídeo vertical para a palavra-chave {keyword!r}."
     )
 
 
@@ -101,75 +99,83 @@ def _search(
     page: int,
 ) -> dict:
     response = session.get(
-        PEXELS_SEARCH_URL,
-        headers={"Authorization": api_key},
+        PIXABAY_SEARCH_URL,
         params={
-            "query": keyword,
-            "orientation": "portrait",
-            "size": "small",
-            "locale": "en-US",
+            "key": api_key,
+            "q": keyword,
+            "video_type": "film",
+            "orientation": "vertical",
+            "lang": "en",
+            "safesearch": "true",
             "page": page,
-            "per_page": 80,
+            "per_page": PER_PAGE,
         },
         timeout=30,
     )
-    if response.status_code in {401, 403}:
-        raise RuntimeError("A chave da API do Pexels foi recusada.")
+    if response.status_code in {400, 401, 403}:
+        raise RuntimeError("A chave da API do Pixabay foi recusada.")
     if response.status_code == 429:
-        raise RuntimeError("O Pexels limitou as requisições. Tente de novo mais tarde.")
+        raise RuntimeError("O Pixabay limitou as requisições. Tente de novo mais tarde.")
     if response.status_code != 200:
-        raise RuntimeError(f"A busca no Pexels falhou com o status {response.status_code}.")
+        raise RuntimeError(f"A busca no Pixabay falhou com o status {response.status_code}.")
     try:
         payload = response.json()
     except ValueError as exc:
-        raise RuntimeError("A busca no Pexels não devolveu JSON.") from exc
+        raise RuntimeError("A busca no Pixabay não devolveu JSON.") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError("A busca no Pexels não devolveu JSON.")
+        raise RuntimeError("A busca no Pixabay não devolveu JSON.")
     return payload
 
 
-def _select_video(videos: list[dict], used_ids: set[int]) -> tuple[int, str] | None:
+def _has_next_page(payload: dict, page: int) -> bool:
+    total = payload.get("totalHits")
+    hits = payload.get("hits") or []
+    if not hits:
+        return False
+    if not isinstance(total, int):
+        return len(hits) == PER_PAGE
+    return page * PER_PAGE < total
+
+
+def _select_video(hits: list[dict], used_ids: set[int]) -> tuple[int, str] | None:
     ranked: list[tuple[int, int, str]] = []
-    for video in videos:
-        video_id = video.get("id")
-        duration = video.get("duration")
+    for hit in hits:
+        video_id = hit.get("id")
         if not isinstance(video_id, int) or video_id in used_ids:
             continue
-        if not isinstance(duration, int) or duration < 1 or duration > MAX_DURATION_SECONDS:
+        if hit.get("type") not in (None, "film"):
             continue
-        link = _best_file(video.get("video_files") or [])
-        if link is not None:
-            ranked.append((duration, video_id, link))
+        link = _best_mp4(hit.get("videos") or {})
+        if link is None:
+            continue
+        duration = hit.get("duration")
+        if not isinstance(duration, int) or duration < 1:
+            duration = 10**9
+        ranked.append((duration, video_id, link))
     if not ranked:
         return None
-    _, video_id, link = min(ranked)
+    short = [item for item in ranked if item[0] <= MAX_DURATION_SECONDS]
+    _, video_id, link = min(short or ranked)
     return video_id, link
 
 
-def _best_file(files: list[dict]) -> str | None:
+def _best_mp4(videos: dict) -> str | None:
     candidates: list[tuple[int, int, str]] = []
-    for item in files:
-        if item.get("file_type") != "video/mp4":
-            continue
+    for name in RENDITIONS:
+        item = videos.get(name) or {}
+        url = item.get("url")
         width = item.get("width") or 0
         height = item.get("height") or 0
-        link = item.get("link")
-        if not isinstance(link, str) or not link:
+        if not isinstance(url, str) or not url.split("?", 1)[0].lower().endswith(".mp4"):
             continue
         if not isinstance(width, int) or not isinstance(height, int):
             continue
-        if height < MIN_HEIGHT or not _is_nine_by_sixteen(width, height):
+        if height <= width:
             continue
-        candidates.append((abs(height - TARGET_HEIGHT), height, link))
+        candidates.append((abs(height - TARGET_HEIGHT), height, url))
     if not candidates:
         return None
     return min(candidates)[2]
-
-
-def _is_nine_by_sixteen(width: int, height: int) -> bool:
-    if width <= 0 or height <= width:
-        return False
-    return abs((width / height) - TARGET_RATIO) <= RATIO_TOLERANCE
 
 
 def _download(session: requests.Session, link: str, destination: Path) -> Path:
@@ -185,7 +191,7 @@ def _download(session: requests.Session, link: str, destination: Path) -> Path:
                     if chunk:
                         handle.write(chunk)
         if partial.stat().st_size == 0:
-            raise RuntimeError("O Pexels devolveu um vídeo vazio.")
+            raise RuntimeError("O Pixabay devolveu um vídeo vazio.")
         partial.replace(destination)
     finally:
         partial.unlink(missing_ok=True)
