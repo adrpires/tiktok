@@ -15,7 +15,7 @@ import schedule
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout, sync_playwright
 
 from downloader import download_backgrounds
-from script_generator import generate_script
+from script_generator import VideoContext, context_path, generate_script, resolve_context
 from video_editor import _spoken_text, edit_video
 
 RUN_TIMES = ("09:00", "15:00", "21:00")
@@ -24,9 +24,15 @@ _POST_BUTTON = re.compile(r"^(post|publicar)$", re.IGNORECASE)
 LOGGER = logging.getLogger(__name__)
 
 
-def run_flow(theme: str) -> Path:
-    """Gera o roteiro, baixa os fundos, monta o vídeo e envia ao TikTok."""
-    script = generate_script(theme)
+def run_flow(source: VideoContext | str | None = None) -> Path:
+    """Gera o roteiro, baixa os fundos, monta o vídeo e envia ao TikTok.
+
+    Se ``CONTEXT_PATH`` aponta para um JSON, esse arquivo é lido de novo
+    nesta execução. Um tema em texto só entra quando o arquivo não existe.
+    """
+    context = resolve_context(source)
+    LOGGER.info("Contexto: %s", context.texto().replace("\n", " | "))
+    script = generate_script(context)
     backgrounds = download_backgrounds(script.palavras_chave)
     output = Path(tempfile.mkdtemp(prefix="tiktok-final-")) / "tiktok.mp4"
     try:
@@ -78,7 +84,7 @@ def upload_to_tiktok(
             browser.close()
 
 
-def build_scheduler(theme: str) -> schedule.Scheduler:
+def build_scheduler(theme: str = "") -> schedule.Scheduler:
     """Cria a agenda diária das 09:00, 15:00 e 21:00."""
     scheduler = schedule.Scheduler()
     for moment in RUN_TIMES:
@@ -88,20 +94,45 @@ def build_scheduler(theme: str) -> schedule.Scheduler:
 
 def run_scheduler(theme: str) -> None:
     """Espera os três horários e executa o fluxo em cada um."""
-    cleaned = theme.strip()
-    if not cleaned:
-        raise ValueError("Informe o tema dos vídeos.")
+    _require_source(theme)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    scheduler = build_scheduler(cleaned)
+    path = context_path()
+    if path is not None:
+        LOGGER.info(
+            "Cada horário lê o contexto em %s. Sem esse arquivo, o tema fica: %s",
+            path,
+            theme.strip() or "(nenhum)",
+        )
+    else:
+        LOGGER.info("Tema fixo: %s", theme.strip())
+    scheduler = build_scheduler(theme.strip())
     LOGGER.info("Fluxo agendado para %s.", ", ".join(RUN_TIMES))
     while True:
         scheduler.run_pending()
         time.sleep(1)
 
 
+def run_once(theme: str) -> Path:
+    """Gera e publica um vídeo agora, com o contexto atual."""
+    _require_source(theme)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    output = run_flow(theme or None)
+    LOGGER.info("Vídeo enviado: %s", output)
+    return output
+
+
+def _require_source(theme: str) -> None:
+    path = context_path()
+    if theme.strip() or os.environ.get("TIKTOK_THEME", "").strip():
+        return
+    if path is not None and path.is_file():
+        return
+    raise ValueError("Informe um contexto ou um tema.")
+
+
 def _safe_run(theme: str) -> None:
     try:
-        output = run_flow(theme)
+        output = run_flow(theme or None)
     except Exception:
         LOGGER.exception("O fluxo do TikTok falhou.")
         return
@@ -124,10 +155,24 @@ def _login_required(page: Page) -> bool:
 
 
 def main() -> None:
-    theme = " ".join(sys.argv[1:]).strip() or os.environ.get("TIKTOK_THEME", "").strip()
-    if not theme:
-        print('Uso: python scheduler.py "tema do vídeo"', file=sys.stderr)
+    args = sys.argv[1:]
+    once = bool(args and args[0] == "--agora")
+    if once:
+        args = args[1:]
+    theme = " ".join(args).strip() or os.environ.get("TIKTOK_THEME", "").strip()
+    try:
+        _require_source(theme)
+    except ValueError:
+        print(
+            'Uso: python scheduler.py "tema do vídeo"\n'
+            "     python scheduler.py --agora\n"
+            "Ou defina CONTEXT_PATH com um JSON: tema, publico, tom, objetivo, detalhes.",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
+    if once:
+        run_once(theme)
+        return
     run_scheduler(theme)
 
 

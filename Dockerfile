@@ -13,6 +13,7 @@ COPY downloader.py script_generator.py video_editor.py scheduler.py ./
 
 ENV PYTHONUNBUFFERED=1 \
     TZ=America/Sao_Paulo \
-    TIKTOK_STORAGE_STATE=/session/TIKTOK_STORAGE_STATE.json
+    TIKTOK_STORAGE_STATE=/session/TIKTOK_STORAGE_STATE.json \
+    CONTEXT_PATH=/contexto/contexto.json
 
 ENTRYPOINT ["python", "scheduler.py"]
