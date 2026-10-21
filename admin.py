@@ -265,12 +265,16 @@ def _context_payload() -> dict:
         context = load_context_file(path)
     except ValueError as exc:
         return {**empty, "erro": str(exc)}
+    from video_editor import resolved_max_mb
+
+    limit = resolved_max_mb(context.tamanho_mb)
     return {
         "tema": context.tema,
         "publico": context.publico,
         "tom": context.tom,
         "objetivo": context.objetivo,
         "detalhes": context.detalhes,
+        "tamanho_mb": int(limit) if limit is not None and float(limit).is_integer() else limit,
     }
 
 

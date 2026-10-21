@@ -141,6 +141,9 @@
           <label for="detalhes">Detalhes <span class="hint">O que entra e o que fica de fora.</span></label>
           <textarea id="detalhes" name="detalhes" maxlength="4000" placeholder="Três hábitos de dois minutos. Não citar marcas."></textarea>
 
+          <label for="tamanho">Tamanho máximo <span class="hint">Em MB. Um vídeo de 30 segundos fica perto desse arquivo.</span></label>
+          <input id="tamanho" name="tamanho_mb" type="number" min="4" max="80" step="1" inputmode="numeric" placeholder="12">
+
           <div class="actions">
             <button type="submit">Salvar</button>
             <button id="gerar" class="secondary" type="button">Publicar agora</button>
@@ -153,6 +156,7 @@
           <p id="status" class="status">Nenhum vídeo nesta sessão.</p>
           <p id="quando" class="arquivo"></p>
           <ul id="relatorio"></ul>
+          <p id="tamanho" class="arquivo"></p>
           <p id="erro" class="erro" hidden></p>
           <p id="proximo"></p>
           <ol id="horarios"></ol>
@@ -195,6 +199,7 @@
     function payload() {
       const body = {};
       for (const field of fields) body[field] = $(field).value;
+      body.tamanho_mb = $("tamanho").value.trim();
       return body;
     }
 
@@ -239,12 +244,14 @@
       const message = relatorio.erro || "";
       error.hidden = !message;
       setText("erro", message);
+      setText("tamanho", relatorio.tamanho ? "Arquivo: " + relatorio.tamanho : "");
     }
 
     function paint(data, fillForm) {
       const context = data.contexto || {};
       if (fillForm) {
         for (const field of fields) $(field).value = context[field] || "";
+        $("tamanho").value = context.tamanho_mb || "";
         if (context.erro) {
           $("aviso").textContent = context.erro;
           $("aviso").classList.add("erro");

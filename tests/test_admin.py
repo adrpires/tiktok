@@ -66,6 +66,7 @@ class AdminTests(unittest.TestCase):
         self.assertIn("Publicar agora", page)
         self.assertIn("Relatório", page)
         self.assertIn("Vídeo gerado", page)
+        self.assertIn("Tamanho máximo", page)
         self.assertNotIn("senha-teste", page)
         status, payload = self.request("/api/estado")
         self.assertEqual(status, 401)
@@ -93,12 +94,14 @@ class AdminTests(unittest.TestCase):
                 "tom": "leve",
                 "objetivo": "salvar o vídeo",
                 "detalhes": "não citar marcas",
+                "tamanho_mb": "8",
             },
         )
         self.assertEqual(status, 200)
         saved = json.loads(self.context_file.read_text(encoding="utf-8"))
         self.assertEqual(saved["tema"], "água ao acordar")
         self.assertEqual(saved["detalhes"], "não citar marcas")
+        self.assertEqual(saved["tamanho_mb"], 8)
         self.assertEqual(payload["contexto"]["objetivo"], "salvar o vídeo")
 
     def test_tema_vazio_nao_grava(self) -> None:

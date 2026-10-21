@@ -18,7 +18,7 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout, sync_pl
 
 from downloader import download_backgrounds
 from script_generator import VideoContext, context_path, generate_script, resolve_context
-from video_editor import _spoken_text, edit_video
+from video_editor import _spoken_text, edit_video, format_mb, resolved_max_mb
 
 RUN_TIMES = ("09:00", "15:00", "21:00")
 TIKTOK_UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload"
@@ -42,6 +42,7 @@ def _blank_report(quando: str = "") -> dict[str, object]:
         "comentario": None,
         "erro": "",
         "arquivo": "",
+        "tamanho": "",
     }
 
 
@@ -83,8 +84,16 @@ def run_flow(source: VideoContext | str | None = None) -> Path:
         script = generate_script(context)
         backgrounds = download_backgrounds(script.palavras_chave)
         output = Path(tempfile.mkdtemp(prefix="tiktok-final-")) / "tiktok.mp4"
-        edit_video(backgrounds, script, output)
-        _update_report(gerado=True, arquivo=str(output), erro="")
+        limit = resolved_max_mb(context.tamanho_mb)
+        if limit is None:
+            LOGGER.info("Montando o vídeo sem limite de tamanho.")
+        else:
+            label = int(limit) if float(limit).is_integer() else limit
+            LOGGER.info("Montando o vídeo com limite de %s MB.", label)
+        edit_video(backgrounds, script, output, max_mb=limit)
+        size = format_mb(output.stat().st_size)
+        LOGGER.info("Vídeo montado: %s.", size)
+        _update_report(gerado=True, arquivo=str(output), tamanho=size, erro="")
         upload_to_tiktok(output, _spoken_text(script.narração), script.hashtags)
         _update_report(postado=True, erro="")
         if script.hashtags:
@@ -266,6 +275,7 @@ def _update_report(**fields: object) -> None:
 def _record_failure(exc: BaseException, output: Path | None) -> None:
     message = str(exc).strip()[:500] or exc.__class__.__name__
     generated = output is not None and output.is_file()
+    size = format_mb(output.stat().st_size) if generated else ""
     text = message.casefold()
     posted = "vídeo foi publicado" in text
     comment_failed = posted and "comentário" in text
@@ -275,6 +285,7 @@ def _record_failure(exc: BaseException, output: Path | None) -> None:
         comentario=False if comment_failed else None,
         erro=message,
         arquivo=str(output) if output is not None else "",
+        tamanho=size,
     )
 
 

@@ -15,6 +15,7 @@ from script_generator import (
     _complete,
     generate_script,
     llm_settings,
+    context_from_mapping,
     load_context_file,
     resolve_context,
 )
@@ -242,6 +243,40 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(context.tom)
         self.assertTrue(context.objetivo)
         self.assertTrue(context.detalhes)
+        self.assertEqual(context.tamanho_mb, 12)
+        self.assertNotIn("12", context.texto())
+
+    def test_tamanho_nao_entra_no_roteiro_e_rejeita_fora_da_faixa(self) -> None:
+        context = context_from_mapping({"tema": "água", "tamanho_mb": "8,5"})
+        self.assertEqual(context.tamanho_mb, 8.5)
+        self.assertNotIn("8,5", context.texto())
+        with self.assertRaises(ValueError):
+            context_from_mapping({"tema": "água", "tamanho_mb": 2})
+        with self.assertRaises(ValueError):
+            context_from_mapping({"tema": "água", "tamanho_mb": 200})
+
+    def test_bitrate_cabe_no_tamanho_pedido(self) -> None:
+        from video_editor import format_mb, resolved_max_mb, video_bitrate
+
+        rate = video_bitrate(30, 12)
+        kbps = int(rate[:-1])
+        audio_mb = 96 * 30 / 8 / 1024
+        video_mb = kbps * 30 / 8 / 1024
+        self.assertLess(audio_mb + video_mb, 12)
+        self.assertGreater(kbps, 400)
+        self.assertEqual(format_mb(1024 * 1024), "1,0 MB")
+        previous = os.environ.pop("VIDEO_MAX_MB", None)
+        try:
+            self.assertEqual(resolved_max_mb(None), 12)
+            self.assertIsNone(resolved_max_mb(0))
+            os.environ["VIDEO_MAX_MB"] = "20"
+            self.assertEqual(resolved_max_mb(None), 20)
+            self.assertEqual(resolved_max_mb(8), 8)
+        finally:
+            if previous is None:
+                os.environ.pop("VIDEO_MAX_MB", None)
+            else:
+                os.environ["VIDEO_MAX_MB"] = previous
 
 
 if __name__ == "__main__":

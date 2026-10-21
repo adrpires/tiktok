@@ -95,6 +95,7 @@ _CONTEXT_FIELDS = {
     "objetivo": "objetivo",
     "detalhes": "detalhes",
 }
+_SIZE_FIELDS = {"tamanho_mb", "tamanho"}
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ class VideoContext:
     tom: str = ""
     objetivo: str = ""
     detalhes: str = ""
+    tamanho_mb: float | None = None
 
     def texto(self) -> str:
         """Monta o pedido enviado ao Grok, só com os campos preenchidos."""
@@ -166,7 +168,10 @@ def context_from_mapping(data: dict) -> VideoContext:
         raise ValueError("O contexto precisa ser um objeto JSON.")
 
     values = {name: "" for name in ("tema", "publico", "tom", "objetivo", "detalhes")}
+    tamanho_mb = _parse_tamanho(data)
     for key, value in data.items():
+        if str(key).strip().lower() in _SIZE_FIELDS:
+            continue
         field = _CONTEXT_FIELDS.get(str(key).strip().lower())
         if field is None:
             raise ValueError(f"Campo desconhecido no contexto: {key}")
@@ -178,7 +183,32 @@ def context_from_mapping(data: dict) -> VideoContext:
         values[field] = cleaned
     if not values["tema"]:
         raise ValueError("O contexto precisa do campo tema.")
-    return VideoContext(**values)
+    return VideoContext(tamanho_mb=tamanho_mb, **values)
+
+
+def _parse_tamanho(data: dict) -> float | None:
+    present = [key for key in data if str(key).strip().lower() in _SIZE_FIELDS]
+    if not present:
+        return None
+    raw = data.get("tamanho_mb", data.get("tamanho"))
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        text = raw.strip().lower().replace(",", ".")
+        if text in {"", "0", "sem limite"}:
+            return 0
+        try:
+            raw = float(text)
+        except ValueError as exc:
+            raise ValueError("O tamanho do vídeo precisa ser um número em MB.") from exc
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError("O tamanho do vídeo precisa ser um número em MB.")
+    number = float(raw)
+    if number == 0:
+        return 0
+    if number < 4 or number > 80:
+        raise ValueError("O tamanho do vídeo precisa ficar entre 4 e 80 MB.")
+    return number
 
 
 def load_context_file(path: Path) -> VideoContext:
@@ -203,6 +233,10 @@ def save_context_file(context: VideoContext, path: Path | None = None) -> Path:
         "objetivo": context.objetivo.strip(),
         "detalhes": context.detalhes.strip(),
     }
+    if context.tamanho_mb is not None:
+        payload["tamanho_mb"] = (
+            int(context.tamanho_mb) if float(context.tamanho_mb).is_integer() else context.tamanho_mb
+        )
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".tmp")

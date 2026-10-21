@@ -19,11 +19,66 @@ from downloader import BackgroundVideos
 TIKTOK_WIDTH = 1080
 TIKTOK_HEIGHT = 1920
 TIKTOK_FPS = 30
+DEFAULT_MAX_MB = 12
+MIN_MAX_MB = 4
+MAX_MAX_MB = 80
+_AUDIO_KBPS = 96
 _FALA = re.compile(r"(?im)^fala:\s*(.+)$")
 _SECTION = re.compile(
     r"(?im)^(?:gancho \(0-3s\)|problema \(3-10s\)|solução \(10-25s\)|cta \(25-30s\)):\s*(.+)$"
 )
 Synthesizer = Callable[[str, Path], Path]
+
+
+def resolved_max_mb(explicit: float | None = None) -> float | None:
+    """MB máximos do MP4. None significa sem limite.
+
+    Um número no contexto vale primeiro. Sem ele, entra ``VIDEO_MAX_MB``.
+    Se a variável também não existe, o limite é 12 MB.
+    """
+    if explicit == 0:
+        return None
+    if explicit is not None:
+        return _checked_mb(explicit)
+    raw = os.environ.get("VIDEO_MAX_MB", "").strip().lower().replace(",", ".")
+    if raw in {"0", "off", "nenhum", "sem limite"}:
+        return None
+    if not raw:
+        return float(DEFAULT_MAX_MB)
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError("VIDEO_MAX_MB precisa ser um número em MB.") from exc
+    if value == 0:
+        return None
+    return _checked_mb(value)
+
+
+def video_bitrate(duration: float, max_mb: float) -> str:
+    """Bitrate de vídeo para o arquivo ficar perto de ``max_mb``."""
+    if duration <= 0:
+        raise ValueError("A duração do vídeo precisa ser maior que zero.")
+    budget = max_mb * 0.85 * 1024 * 1024
+    audio_bytes = _AUDIO_KBPS * 1000 / 8 * duration
+    video_bytes = max(budget - audio_bytes, 200_000)
+    kbps = max(400, int(video_bytes * 8 / duration / 1000))
+    return f"{kbps}k"
+
+
+def format_mb(size: int) -> str:
+    """Tamanho de arquivo em MB, com vírgula."""
+    return f"{size / (1024 * 1024):.1f}".replace(".", ",") + " MB"
+
+
+def _checked_mb(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("O tamanho do vídeo precisa ser um número em MB.")
+    number = float(value)
+    if number < MIN_MAX_MB or number > MAX_MAX_MB:
+        raise ValueError(
+            f"O tamanho do vídeo precisa ficar entre {MIN_MAX_MB} e {MAX_MAX_MB} MB."
+        )
+    return number
 
 
 def edit_video(
@@ -33,6 +88,7 @@ def edit_video(
     *,
     synthesizer: Synthesizer | None = None,
     fps: int = TIKTOK_FPS,
+    max_mb: float | None = None,
 ) -> Path:
     """Junta os vídeos de fundo, narra o roteiro e exporta um MP4 1080×1920.
 
@@ -67,6 +123,14 @@ def edit_video(
         if video.duration > audio.duration:
             video = video.subclipped(0, audio.duration)
         final = video.with_audio(audio)
+        encode: dict[str, object] = {}
+        if max_mb is not None:
+            bitrate = video_bitrate(float(audio.duration), max_mb)
+            encode = {
+                "bitrate": bitrate,
+                "audio_bitrate": f"{_AUDIO_KBPS}k",
+                "ffmpeg_params": ["-maxrate", bitrate, "-bufsize", f"{int(bitrate[:-1]) * 2}k"],
+            }
         final.write_videofile(
             destination,
             fps=fps,
@@ -77,6 +141,7 @@ def edit_video(
             temp_audiofile=temp_audio,
             remove_temp=True,
             logger=None,
+            **encode,
         )
     finally:
         for source in sources:
