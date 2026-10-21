@@ -22,7 +22,8 @@ from video_editor import _spoken_text, edit_video
 
 RUN_TIMES = ("09:00", "15:00", "21:00")
 TIKTOK_UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload"
-_POST_BUTTON = re.compile(r"^(post|publicar)$", re.IGNORECASE)
+_POST_BUTTON = re.compile(r"^(post|postar|publicar)( vídeo| video)?$", re.IGNORECASE)
+_POST_READY_MS = 180_000
 LOGGER = logging.getLogger(__name__)
 _state_lock = threading.Lock()
 _logs: list[str] = []
@@ -103,7 +104,7 @@ def upload_to_tiktok(
             )
             page.locator('input[type="file"]').first.set_input_files(str(video.resolve()))
             _fill_caption(page, caption)
-            page.get_by_role("button", name=_POST_BUTTON).first.click(timeout=30_000)
+            _click_post(page)
         finally:
             context.close()
             browser.close()
@@ -245,6 +246,50 @@ def _safe_run(theme: str) -> None:
         LOGGER.info("Já existe um vídeo em andamento. Este horário foi pulado.")
         return
     _execute(theme)
+
+
+def _click_post(
+    page: Page,
+    *,
+    visible_timeout: int = 45_000,
+    ready_timeout: int = _POST_READY_MS,
+) -> None:
+    """Clica em Publicar quando o TikTok termina de receber o vídeo.
+
+    O botão existe com o nome Post, Postar ou Publicar, e também com o
+    marcador estável do Studio. Ele fica desativado enquanto o arquivo sobe.
+    """
+    button = page.locator('[data-e2e="post_video_button"]').or_(
+        page.get_by_role("button", name=_POST_BUTTON)
+    ).first
+    LOGGER.info("Aguardando o TikTok liberar o botão de publicar.")
+    try:
+        button.wait_for(state="visible", timeout=visible_timeout)
+    except PlaywrightTimeout as exc:
+        raise _publish_failure(
+            page,
+            "O TikTok não mostrou o botão de publicar.",
+        ) from exc
+    try:
+        button.click(timeout=ready_timeout)
+    except PlaywrightTimeout as exc:
+        raise _publish_failure(
+            page,
+            "O botão de publicar continuou desativado. O vídeo ainda estava em processamento.",
+        ) from exc
+
+
+def _publish_failure(page: Page, reason: str) -> RuntimeError:
+    labels: list[str] = []
+    try:
+        for text in page.get_by_role("button").all_inner_texts():
+            clean = " ".join(text.split())
+            if clean and clean not in labels:
+                labels.append(clean)
+    except Exception:
+        labels = []
+    shown = ", ".join(labels[:6]) or "nenhum"
+    return RuntimeError(f"{reason} Botões na tela: {shown}.")
 
 
 def _fill_caption(page: Page, caption: str) -> None:
