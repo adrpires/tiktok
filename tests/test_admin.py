@@ -67,6 +67,7 @@ class AdminTests(unittest.TestCase):
         self.assertIn("Relatório", page)
         self.assertIn("Vídeo gerado", page)
         self.assertIn("Tamanho máximo", page)
+        self.assertIn('id="player"', page)
         self.assertNotIn("senha-teste", page)
         status, payload = self.request("/api/estado")
         self.assertEqual(status, 401)
@@ -200,6 +201,41 @@ class AdminTests(unittest.TestCase):
         self.assertFalse(report["postado"])
         self.assertIsNone(report["comentario"])
 
+    def test_video_pode_ser_assistido(self) -> None:
+        bare = urllib.request.Request(self.base + "/video")
+        with self.assertRaises(urllib.error.HTTPError) as negado:
+            urllib.request.urlopen(bare)
+        self.assertEqual(negado.exception.code, 401)
+
+        self.entrar()
+        previous = os.environ.get("VIDEO_PATH")
+        folder = Path(self.context_file.parent)
+        destination = folder / "ultimo.mp4"
+        os.environ["VIDEO_PATH"] = str(destination)
+        try:
+            status, payload = self.request("/video")
+            self.assertEqual(status, 404)
+            source = folder / "origem.mp4"
+            source.write_bytes(b"0123456789abcdef")
+            stored = scheduler.store_preview(source)
+            self.assertEqual(stored, destination)
+            status, body = self._bytes("GET", "/video")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, b"0123456789abcdef")
+            status, partial = self._bytes("GET", "/video", {"Range": "bytes=4-7"})
+            self.assertEqual(status, 206)
+            self.assertEqual(partial, b"4567")
+            status, estado = self.request("/api/estado")
+            self.assertEqual(status, 200)
+            self.assertTrue(estado["relatorio"]["video"])
+            self.assertTrue(estado["relatorio"]["video_id"])
+        finally:
+            if previous is None:
+                os.environ.pop("VIDEO_PATH", None)
+            else:
+                os.environ["VIDEO_PATH"] = previous
+            destination.unlink(missing_ok=True)
+
     def test_proximo_horario(self) -> None:
         self.assertEqual(scheduler.proximo_horario(datetime(2026, 10, 21, 8, 0)), "09:00")
         self.assertEqual(scheduler.proximo_horario(datetime(2026, 10, 21, 9, 0)), "15:00")
@@ -235,6 +271,23 @@ class AdminTests(unittest.TestCase):
         body = second.read()
         self.assertEqual(second.status, 200, body)
         connection.close()
+
+    def _bytes(self, method: str, path: str, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
+        cookie = ""
+        for item in self.jar:
+            if item.name == "sessao":
+                cookie = f"sessao={item.value}"
+        host, port = self.server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        sent = {"Cookie": cookie}
+        if headers:
+            sent.update(headers)
+        connection.request(method, path, headers=sent)
+        response = connection.getresponse()
+        body = response.read()
+        status = response.status
+        connection.close()
+        return status, body
 
     def entrar(self) -> None:
         status, _ = self.request("/entrar", {"senha": "senha-teste"})

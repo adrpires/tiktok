@@ -76,6 +76,7 @@
     .status.bad { color: var(--clay); }
     .status.ok { color: var(--green-dark); }
     #proximo, .arquivo { color: var(--muted); margin: 8px 0 0; font-size: 14px; }
+    #player { width: 100%; max-height: 480px; margin: 12px 0; background: #1c1916; border-radius: 12px; }
     #horarios { list-style: none; padding: 0; margin: 16px 0; display: flex; gap: 8px; }
     #horarios li { flex: 1; text-align: center; padding: 10px 0; border-radius: 12px; background: #f6f1e8; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
     #horarios li.next { background: #e7f5ef; border-color: #b7dece; color: var(--green-dark); font-weight: 700; }
@@ -157,6 +158,7 @@
           <p id="quando" class="arquivo"></p>
           <ul id="relatorio"></ul>
           <p id="tamanho" class="arquivo"></p>
+          <video id="player" controls playsinline preload="metadata" hidden></video>
           <p id="erro" class="erro" hidden></p>
           <p id="proximo"></p>
           <ol id="horarios"></ol>
@@ -245,6 +247,25 @@
       error.hidden = !message;
       setText("erro", message);
       setText("tamanho", relatorio.tamanho ? "Arquivo: " + relatorio.tamanho : "");
+      paintVideo(relatorio);
+    }
+
+    function paintVideo(relatorio) {
+      const player = $("player");
+      if (!relatorio.video) {
+        if (!player.hidden) {
+          player.hidden = true;
+          player.removeAttribute("src");
+          player.removeAttribute("data-src");
+        }
+        return;
+      }
+      const next = "/video?v=" + encodeURIComponent(relatorio.video_id || "");
+      if (player.getAttribute("data-src") !== next) {
+        player.setAttribute("data-src", next);
+        player.src = next;
+      }
+      player.hidden = false;
     }
 
     function paint(data, fillForm) {

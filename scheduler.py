@@ -93,6 +93,8 @@ def run_flow(source: VideoContext | str | None = None) -> Path:
         edit_video(backgrounds, script, output, max_mb=limit)
         size = format_mb(output.stat().st_size)
         LOGGER.info("Vídeo montado: %s.", size)
+        if store_preview(output) is not None:
+            LOGGER.info("A cópia para assistir está na página.")
         _update_report(gerado=True, arquivo=str(output), tamanho=size, erro="")
         upload_to_tiktok(output, _spoken_text(script.narração), script.hashtags)
         _update_report(postado=True, erro="")
@@ -215,17 +217,42 @@ def proximo_horario(now: datetime | None = None) -> str:
     return min(upcoming)[1]
 
 
+def preview_path() -> Path:
+    """MP4 estável que a página consegue reproduzir."""
+    raw = os.environ.get("VIDEO_PATH", "").strip()
+    return Path(raw) if raw else Path("/videos/ultimo.mp4")
+
+
+def store_preview(source: Path) -> Path | None:
+    """Copia o vídeo gerado para o caminho que a página exibe."""
+    destination = preview_path()
+    temporary = destination.with_name(destination.name + ".tmp")
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, temporary)
+        temporary.replace(destination)
+    except OSError:
+        LOGGER.exception("Não foi possível guardar a cópia para assistir.")
+        temporary.unlink(missing_ok=True)
+        return None
+    return destination
+
+
 def snapshot() -> dict[str, object]:
     """Estado visto pela página: se há vídeo em andamento, o último resultado e o log."""
     with _state_lock:
         ultimo = _state["ultimo"]
         relatorio = _state["relatorio"]
+        report = dict(relatorio) if isinstance(relatorio, dict) else _blank_report()
+        preview = preview_path()
+        report["video"] = preview.is_file()
+        report["video_id"] = str(int(preview.stat().st_mtime)) if report["video"] else ""
         return {
             "executando": _state["executando"],
             "horarios": list(RUN_TIMES),
             "proximo": proximo_horario(),
             "ultimo": dict(ultimo) if isinstance(ultimo, dict) else {},
-            "relatorio": dict(relatorio) if isinstance(relatorio, dict) else _blank_report(),
+            "relatorio": report,
             "log": list(_logs),
         }
 

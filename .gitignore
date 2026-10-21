@@ -3,3 +3,4 @@ __pycache__/
 .env
 TIKTOK_STORAGE_STATE.json
 contexto.json
+videos/

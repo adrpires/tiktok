@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -47,6 +48,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._json(401, {"erro": "Entre com a senha."})
                 return
             self._json(200, _estado())
+            return
+        if path == "/video":
+            self._video()
             return
         self._json(404, {"erro": "Não encontrado."})
 
@@ -203,11 +207,65 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; "
+            "default-src 'none'; connect-src 'self'; media-src 'self'; style-src 'unsafe-inline'; "
             "script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
         )
         if cookie:
             self.send_header("Set-Cookie", cookie)
+
+    def _video(self) -> None:
+        if not self._authenticated():
+            self._json(401, {"erro": "Entre com a senha."})
+            return
+        from scheduler import preview_path
+
+        path = preview_path()
+        if not path.is_file():
+            self._json(404, {"erro": "Nenhum vídeo gerado ainda."})
+            return
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        status = 200
+        requested = self.headers.get("Range")
+        if requested:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested.strip())
+            if match is None:
+                self._range_error(size)
+                return
+            if match.group(1):
+                start = int(match.group(1))
+            if match.group(2):
+                end = int(match.group(2))
+            if start >= size or start > end:
+                self._range_error(size)
+                return
+            end = min(end, size - 1)
+            status = 206
+        length = end - start + 1
+        self.send_response(status)
+        self._headers(length, "video/mp4")
+        self.send_header("Accept-Ranges", "bytes")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        with path.open("rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining:
+                chunk = handle.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                remaining -= len(chunk)
+
+    def _range_error(self, size: int) -> None:
+        self.send_response(416)
+        self.send_header("Content-Range", f"bytes */{size}")
+        self._headers(0, "text/plain; charset=utf-8")
+        self.end_headers()
 
 
 def start_admin() -> bool:
