@@ -1,8 +1,9 @@
-"""Gera um roteiro de TikTok de 30 segundos com o Grok, pela API da xAI."""
+"""Gera um roteiro de TikTok de 30 segundos com uma IA de texto."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -15,6 +16,9 @@ from openai import OpenAI
 # então a chamada chega em https://api.x.ai/v1/responses.
 XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_MODEL = "grok-4.7"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_MODEL = "gemini-3.8-flash"
+LOGGER = logging.getLogger(__name__)
 
 _INSTRUCTIONS = """
 Você escreve a narração falada de um TikTok de 30 segundos, em português do Brasil.
@@ -226,21 +230,87 @@ def resolve_context(source: VideoContext | str | None = None) -> VideoContext:
     raise ValueError("Informe um contexto ou um tema.")
 
 
+@dataclass(frozen=True)
+class LlmSettings:
+    """Provedor usado para escrever o roteiro."""
+
+    provider: str
+    model: str
+    api_key: str
+    base_url: str
+    use_responses: bool
+
+
 def create_client(api_key: str | None = None) -> OpenAI:
     """Abre um cliente da OpenAI apontando para a API da xAI."""
-    key = (api_key if api_key is not None else os.environ.get("XAI_API_KEY", "")).strip()
+    key = _clean_secret(api_key if api_key is not None else os.environ.get("XAI_API_KEY", ""))
     if not key:
         raise RuntimeError("Defina XAI_API_KEY com a chave da API da xAI.")
     return OpenAI(api_key=key, base_url=XAI_BASE_URL)
+
+
+def llm_settings() -> LlmSettings:
+    """Escolhe Gemini, um endpoint compatível ou a xAI.
+
+    Com ``GEMINI_API_KEY`` definida e sem ``SCRIPT_PROVIDER``, o roteiro sai
+    pela cota do Google AI Studio. ``SCRIPT_PROVIDER=xai`` força o Grok.
+    """
+    provider = os.environ.get("SCRIPT_PROVIDER", "").strip().lower()
+    gemini_key = _clean_secret(os.environ.get("GEMINI_API_KEY", ""))
+    script_key = _clean_secret(os.environ.get("SCRIPT_API_KEY", ""))
+    xai_key = _clean_secret(os.environ.get("XAI_API_KEY", ""))
+    if not provider:
+        if gemini_key:
+            provider = "gemini"
+        elif script_key and os.environ.get("SCRIPT_BASE_URL", "").strip():
+            provider = "compativel"
+        else:
+            provider = "xai"
+
+    if provider == "gemini":
+        if not gemini_key:
+            raise RuntimeError(
+                "Defina GEMINI_API_KEY com a chave gratuita criada em aistudio.google.com/apikey."
+            )
+        return LlmSettings(
+            provider="gemini",
+            model=os.environ.get("GEMINI_MODEL", "").strip() or GEMINI_MODEL,
+            api_key=gemini_key,
+            base_url=GEMINI_BASE_URL,
+            use_responses=False,
+        )
+    if provider in {"compativel", "openai"}:
+        base_url = os.environ.get("SCRIPT_BASE_URL", "").strip().rstrip("/")
+        model = os.environ.get("SCRIPT_MODEL", "").strip()
+        if not script_key or not base_url or not model:
+            raise RuntimeError("Defina SCRIPT_API_KEY, SCRIPT_BASE_URL e SCRIPT_MODEL.")
+        return LlmSettings(
+            provider="compativel",
+            model=model,
+            api_key=script_key,
+            base_url=base_url + "/",
+            use_responses=False,
+        )
+    if provider != "xai":
+        raise RuntimeError("SCRIPT_PROVIDER deve ser gemini, compativel ou xai.")
+    if not xai_key:
+        raise RuntimeError("Defina XAI_API_KEY com a chave da API da xAI.")
+    return LlmSettings(
+        provider="xai",
+        model=os.environ.get("XAI_MODEL", "").strip() or DEFAULT_MODEL,
+        api_key=xai_key,
+        base_url=XAI_BASE_URL,
+        use_responses=True,
+    )
 
 
 def generate_script(
     context: VideoContext | str,
     *,
     client: OpenAI | None = None,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
 ) -> TikTokScript:
-    """Pede ao Grok uma narração de 30 segundos e 5 palavras-chave em inglês.
+    """Pede uma narração de 30 segundos e 5 palavras-chave em inglês.
 
     ``context`` pode ser um ``VideoContext`` ou, como antes, só o tema.
     A narração segue Gancho (0-3s), Problema (3-10s), Solução (10-25s) e CTA (25-30s).
@@ -248,24 +318,74 @@ def generate_script(
     """
     video_context = context if isinstance(context, VideoContext) else VideoContext(tema=context)
     pedido = video_context.texto()
+    if client is not None:
+        settings = LlmSettings(
+            provider="teste",
+            model=model or DEFAULT_MODEL,
+            api_key="",
+            base_url="",
+            use_responses=True,
+        )
+        llm = client
+    else:
+        settings = llm_settings()
+        if model:
+            settings = LlmSettings(
+                provider=settings.provider,
+                model=model,
+                api_key=settings.api_key,
+                base_url=settings.base_url,
+                use_responses=settings.use_responses,
+            )
+        llm = OpenAI(api_key=settings.api_key, base_url=settings.base_url)
+    LOGGER.info("Pedindo roteiro a %s (%s).", settings.provider, settings.model)
+    return _parse_script(_complete(llm, settings, pedido))
 
-    grok = client or create_client()
-    response = grok.responses.create(
-        model=model,
-        instructions=_INSTRUCTIONS,
-        input=pedido,
-        store=False,
-        reasoning={"effort": "low"},
-        text={"format": _RESPONSE_FORMAT},
+
+def _complete(client: OpenAI, settings: LlmSettings, pedido: str) -> str:
+    if settings.use_responses:
+        response = client.responses.create(
+            model=settings.model,
+            instructions=_INSTRUCTIONS,
+            input=pedido,
+            store=False,
+            reasoning={"effort": "low"},
+            text={"format": _RESPONSE_FORMAT},
+        )
+        return response.output_text
+    response = client.chat.completions.create(
+        model=settings.model,
+        messages=[
+            {"role": "system", "content": _INSTRUCTIONS},
+            {"role": "user", "content": pedido},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": _RESPONSE_FORMAT["name"],
+                "strict": True,
+                "schema": _RESPONSE_FORMAT["schema"],
+            },
+        },
     )
-    return _parse_script(response.output_text)
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("O modelo não devolveu o roteiro.")
+    return content
+
+
+def _clean_secret(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = text[1:-1].strip()
+    return text
 
 
 def _parse_script(payload: str) -> TikTokScript:
     try:
-        data = json.loads(payload)
+        data = json.loads(_json_text(payload))
     except json.JSONDecodeError as exc:
-        raise RuntimeError("A API da xAI não devolveu JSON válido.") from exc
+        raise RuntimeError("O modelo não devolveu JSON válido.") from exc
 
     narration = data.get("narração")
     keywords = data.get("palavras_chave")
@@ -285,6 +405,14 @@ def _parse_script(payload: str) -> TikTokScript:
         narração=_normalize(narration),
         palavras_chave=tuple(item.strip() for item in keywords),
     )
+
+
+def _json_text(payload: str) -> str:
+    text = payload.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
 
 
 def _normalize(narration: str) -> str:

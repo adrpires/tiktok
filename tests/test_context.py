@@ -10,8 +10,11 @@ import unittest
 from pathlib import Path
 
 from script_generator import (
+    LlmSettings,
     VideoContext,
+    _complete,
     generate_script,
+    llm_settings,
     load_context_file,
     resolve_context,
 )
@@ -138,6 +141,61 @@ class ContextTests(unittest.TestCase):
         client_tema = _Client()
         generate_script("rotina matinal", client=client_tema)
         self.assertEqual(client_tema.responses.kwargs["input"], "Tema: rotina matinal")
+
+    def test_gemini_gratuito_tem_prioridade_e_recebe_o_contexto(self) -> None:
+        previous = {name: os.environ.get(name) for name in ("SCRIPT_PROVIDER", "GEMINI_API_KEY", "XAI_API_KEY")}
+        os.environ.pop("SCRIPT_PROVIDER", None)
+        os.environ["GEMINI_API_KEY"] = '"AIza-teste"'
+        os.environ["XAI_API_KEY"] = "xai-teste"
+        try:
+            settings = llm_settings()
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        self.assertEqual(settings.provider, "gemini")
+        self.assertEqual(settings.model, "gemini-3.8-flash")
+        self.assertEqual(settings.api_key, "AIza-teste")
+        self.assertFalse(settings.use_responses)
+
+        class _Message:
+            content = "```json\n" + _Resposta.output_text + "\n```"
+
+        class _Choice:
+            message = _Message()
+
+        class _Completions:
+            def __init__(self) -> None:
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                class _Response:
+                    choices = [_Choice()]
+                return _Response()
+
+        class _Chat:
+            def __init__(self) -> None:
+                self.completions = _Completions()
+
+        class _Gemini:
+            def __init__(self) -> None:
+                self.chat = _Chat()
+
+        client = _Gemini()
+        script = _complete(
+            client,
+            LlmSettings("gemini", "gemini-3.8-flash", "AIza-teste", "https://example/", False),
+            "Tema: rotina",
+        )
+        self.assertIn("Tema: rotina", client.chat.completions.kwargs["messages"][1]["content"])
+        self.assertEqual(client.chat.completions.kwargs["model"], "gemini-3.8-flash")
+        from script_generator import _parse_script
+
+        parsed = _parse_script(script)
+        self.assertEqual(parsed.palavras_chave[0], "morning water")
 
     def test_agora_recebe_o_tema_sem_entrar_na_agenda(self) -> None:
         import scheduler
