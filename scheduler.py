@@ -8,7 +8,9 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import schedule
@@ -22,6 +24,29 @@ RUN_TIMES = ("09:00", "15:00", "21:00")
 TIKTOK_UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload"
 _POST_BUTTON = re.compile(r"^(post|publicar)$", re.IGNORECASE)
 LOGGER = logging.getLogger(__name__)
+_state_lock = threading.Lock()
+_logs: list[str] = []
+_state: dict[str, object] = {
+    "executando": False,
+    "ultimo": {"ok": None, "mensagem": "Nenhum vídeo nesta sessão.", "quando": ""},
+}
+
+
+class _RingHandler(logging.Handler):
+    """Guarda as últimas linhas de log para a página de administração."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.name.startswith("tiktok.admin"):
+            return
+        try:
+            line = self.format(record)
+        except Exception:
+            return
+        if len(line) > 2000:
+            line = line[:2000] + "…"
+        with _state_lock:
+            _logs.append(line)
+            del _logs[:-40]
 
 
 def run_flow(source: VideoContext | str | None = None) -> Path:
@@ -96,6 +121,10 @@ def run_scheduler(theme: str) -> None:
     """Espera os três horários e executa o fluxo em cada um."""
     _require_source(theme)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    _install_log_ring()
+    from admin import start_admin
+
+    start_admin()
     path = context_path()
     if path is not None:
         LOGGER.info(
@@ -130,13 +159,92 @@ def _require_source(theme: str) -> None:
     raise ValueError("Informe um contexto ou um tema.")
 
 
-def _safe_run(theme: str) -> None:
+def proximo_horario(now: datetime | None = None) -> str:
+    """Devolve o próximo entre 09:00, 15:00 e 21:00."""
+    current = now or datetime.now()
+    upcoming: list[tuple[datetime, str]] = []
+    for moment in RUN_TIMES:
+        hour, minute = (int(part) for part in moment.split(":"))
+        candidate = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= current:
+            candidate += timedelta(days=1)
+        upcoming.append((candidate, moment))
+    return min(upcoming)[1]
+
+
+def snapshot() -> dict[str, object]:
+    """Estado visto pela página: se há vídeo em andamento, o último resultado e o log."""
+    with _state_lock:
+        ultimo = _state["ultimo"]
+        return {
+            "executando": _state["executando"],
+            "horarios": list(RUN_TIMES),
+            "proximo": proximo_horario(),
+            "ultimo": dict(ultimo) if isinstance(ultimo, dict) else {},
+            "log": list(_logs),
+        }
+
+
+def start_background(theme: str = "") -> bool:
+    """Dispara o fluxo numa thread. Devolve False se já houver um vídeo em andamento."""
+    if not _mark_running():
+        return False
+    threading.Thread(target=_execute, args=(theme,), name="tiktok-flow", daemon=True).start()
+    return True
+
+
+def reset_run_state() -> None:
+    """Limpa o estado em memória. Usado pelos testes."""
+    with _state_lock:
+        _state["executando"] = False
+        _state["ultimo"] = {"ok": None, "mensagem": "Nenhum vídeo nesta sessão.", "quando": ""}
+        _logs.clear()
+
+
+def _install_log_ring() -> None:
+    root = logging.getLogger()
+    if any(isinstance(handler, _RingHandler) for handler in root.handlers):
+        return
+    handler = _RingHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+    root.addHandler(handler)
+
+
+def _mark_running() -> bool:
+    with _state_lock:
+        if _state["executando"]:
+            return False
+        _state["executando"] = True
+        return True
+
+
+def _mark_finished(ok: bool, message: str) -> None:
+    with _state_lock:
+        _state["executando"] = False
+        _state["ultimo"] = {
+            "ok": ok,
+            "mensagem": message,
+            "quando": datetime.now().strftime("%d/%m %H:%M"),
+        }
+
+
+def _execute(theme: str) -> None:
+    LOGGER.info("Geração iniciada.")
     try:
         output = run_flow(theme or None)
-    except Exception:
+    except Exception as exc:
         LOGGER.exception("O fluxo do TikTok falhou.")
+        _mark_finished(False, str(exc).strip()[:500] or exc.__class__.__name__)
         return
     LOGGER.info("Vídeo enviado: %s", output)
+    _mark_finished(True, "Vídeo enviado.")
+
+
+def _safe_run(theme: str) -> None:
+    if not _mark_running():
+        LOGGER.info("Já existe um vídeo em andamento. Este horário foi pulado.")
+        return
+    _execute(theme)
 
 
 def _fill_caption(page: Page, caption: str) -> None:

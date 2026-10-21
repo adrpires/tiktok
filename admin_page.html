@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contexto dos vídeos</title>
+  <style>
+    :root {
+      --paper: #f4f0e8;
+      --ink: #1c1916;
+      --muted: #5e584f;
+      --line: #e3d9cb;
+      --card: #fffdf9;
+      --green: #0e6b50;
+      --green-dark: #0a5340;
+      --clay: #8d3d28;
+      --focus: #1c1916;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--paper);
+      color: var(--ink);
+      font: 16px/1.45 "Segoe UI", "Helvetica Neue", sans-serif;
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 28px 20px 48px; }
+    h1 { font: 600 34px/1.1 Palatino, "Palatino Linotype", Georgia, serif; margin: 0; }
+    .eyebrow { margin: 0 0 6px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; }
+    .lede { color: var(--muted); margin: 8px 0 0; }
+    .narrow { max-width: 420px; margin: 12vh auto 0; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
+    header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 18px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.8fr); gap: 16px; align-items: start; }
+    label { display: block; font-weight: 650; margin: 14px 0 6px; }
+    .hint { display: block; font-weight: 450; color: var(--muted); font-size: 13px; }
+    input, textarea {
+      width: 100%;
+      border: 1px solid #d9d0c3;
+      background: #fff;
+      color: var(--ink);
+      border-radius: 10px;
+      padding: 12px 12px;
+      font: inherit;
+    }
+    textarea { min-height: 120px; resize: vertical; }
+    input:focus, textarea:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: 600 15px/1 inherit;
+      cursor: pointer;
+      background: var(--green);
+      color: white;
+    }
+    button:hover { background: var(--green-dark); }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    button.secondary { background: transparent; color: var(--ink); border: 1px solid #c9bfb1; }
+    button.secondary:hover { background: #f3ece3; }
+    button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+    .aviso { min-height: 1.2em; margin: 12px 0 0; color: var(--green-dark); }
+    .aviso.erro, .erro { color: var(--clay); }
+    .status { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
+    .status.run { color: #8a5a12; }
+    .status.bad { color: var(--clay); }
+    .status.ok { color: var(--green-dark); }
+    #proximo, .arquivo { color: var(--muted); margin: 8px 0 0; font-size: 14px; }
+    ol { list-style: none; padding: 0; margin: 16px 0; display: flex; gap: 8px; }
+    li { flex: 1; text-align: center; padding: 10px 0; border-radius: 12px; background: #f6f1e8; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+    li.next { background: #e7f5ef; border-color: #b7dece; color: var(--green-dark); font-weight: 700; }
+    pre {
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #1c1916;
+      color: #f4f0e8;
+      border-radius: 12px;
+      padding: 12px;
+      font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    }
+    #carregando { color: var(--muted); }
+    @media (max-width: 800px) {
+      h1 { font-size: 28px; }
+      .layout, header, .actions { display: flex; flex-direction: column; align-items: stretch; }
+      button.ghost { align-self: flex-end; }
+      main { padding: 18px 14px 36px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p id="carregando">Abrindo…</p>
+    <section id="login" class="narrow card" hidden>
+      <p class="eyebrow">TikTok</p>
+      <h1>Entrar</h1>
+      <p class="lede">Use a senha definida em ADMIN_PASSWORD.</p>
+      <form id="login-form">
+        <label for="senha">Senha</label>
+        <input id="senha" name="senha" type="password" autocomplete="current-password" required>
+        <p id="login-erro" class="erro" role="alert"></p>
+        <div class="actions"><button type="submit">Entrar</button></div>
+      </form>
+    </section>
+
+    <section id="app" hidden>
+      <header>
+        <div>
+          <p class="eyebrow">Três vídeos por dia</p>
+          <h1>Contexto</h1>
+          <p class="lede">O texto salvo entra nos vídeos das 09:00, 15:00 e 21:00.</p>
+        </div>
+        <button id="sair" class="ghost" type="button">Sair</button>
+      </header>
+      <div class="layout">
+        <form id="form" class="card" autocomplete="off">
+          <label for="tema">Tema <span class="hint">Assunto do vídeo.</span></label>
+          <input id="tema" name="tema" maxlength="300" required placeholder="rotina matinal de 10 minutos">
+
+          <label for="publico">Público <span class="hint">Com quem a narração fala.</span></label>
+          <input id="publico" name="publico" maxlength="500" placeholder="adultos que acordam cansados">
+
+          <label for="tom">Tom <span class="hint">Como o texto soa.</span></label>
+          <input id="tom" name="tom" maxlength="300" placeholder="direto, leve e sem jargão">
+
+          <label for="objetivo">Objetivo <span class="hint">O que a pessoa deve fazer no final.</span></label>
+          <input id="objetivo" name="objetivo" maxlength="500" placeholder="salvar o vídeo para tentar amanhã">
+
+          <label for="detalhes">Detalhes <span class="hint">O que entra e o que fica de fora.</span></label>
+          <textarea id="detalhes" name="detalhes" maxlength="4000" placeholder="Três hábitos de dois minutos. Não citar marcas."></textarea>
+
+          <div class="actions">
+            <button type="submit">Salvar</button>
+            <button id="gerar" class="secondary" type="button">Publicar agora</button>
+          </div>
+          <p id="aviso" class="aviso" role="status"></p>
+          <p id="arquivo" class="arquivo"></p>
+        </form>
+        <aside class="card">
+          <p id="status" class="status">Aguardando.</p>
+          <p id="proximo"></p>
+          <ol id="horarios"></ol>
+          <pre id="log">Nenhuma atividade ainda.</pre>
+        </aside>
+      </div>
+    </section>
+    <noscript><p>Esta página precisa de JavaScript.</p></noscript>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fields = ["tema", "publico", "tom", "objetivo", "detalhes"];
+    let formReady = false;
+
+    function setText(id, text) {
+      const node = $(id);
+      if (node.textContent !== text) node.textContent = text;
+    }
+
+    async function api(path, options) {
+      const response = await fetch(path, {
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        ...options,
+      });
+      const text = await response.text();
+      let data = {};
+      if (text) {
+        try { data = JSON.parse(text); } catch (error) { data = {}; }
+      }
+      return { ok: response.ok, status: response.status, data };
+    }
+
+    function show(name) {
+      $("carregando").hidden = true;
+      $("login").hidden = name !== "login";
+      $("app").hidden = name !== "app";
+    }
+
+    function payload() {
+      const body = {};
+      for (const field of fields) body[field] = $(field).value;
+      return body;
+    }
+
+    function paint(data, fillForm) {
+      const context = data.contexto || {};
+      if (fillForm) {
+        for (const field of fields) $(field).value = context[field] || "";
+        if (context.erro) {
+          $("aviso").textContent = context.erro;
+          $("aviso").classList.add("erro");
+        }
+      }
+      const running = Boolean(data.executando);
+      const ultimo = data.ultimo || {};
+      let message = running ? "Gerando vídeo…" : (ultimo.mensagem || "Aguardando.");
+      if (!running && ultimo.quando) message += " · " + ultimo.quando;
+      setText("status", message);
+      const tone = running ? " run" : ultimo.ok === true ? " ok" : ultimo.ok === false ? " bad" : "";
+      $("status").className = "status" + tone;
+      setText("proximo", data.proximo ? "Próximo horário: " + data.proximo : "");
+      setText("arquivo", data.arquivo ? "Gravado em " + data.arquivo : "");
+      $("gerar").disabled = running;
+      const list = $("horarios");
+      list.replaceChildren();
+      for (const hour of data.horarios || []) {
+        const item = document.createElement("li");
+        item.textContent = hour;
+        if (hour === data.proximo) item.className = "next";
+        list.append(item);
+      }
+      const lines = data.log || [];
+      setText("log", lines.length ? lines.join("\n") : "Nenhuma atividade ainda.");
+      if (lines.length) $("log").scrollTop = $("log").scrollHeight;
+    }
+
+    async function openApp() {
+      const result = await api("/api/estado");
+      if (result.status === 401) {
+        show("login");
+        return;
+      }
+      if (!result.ok) {
+        $("carregando").hidden = false;
+        setText("carregando", result.data.erro || "Não foi possível abrir a página.");
+        return;
+      }
+      show("app");
+      paint(result.data, !formReady);
+      formReady = true;
+    }
+
+    $("login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("login-erro").textContent = "";
+      const result = await api("/entrar", {
+        method: "POST",
+        body: JSON.stringify({ senha: $("senha").value }),
+      });
+      if (!result.ok) {
+        $("login-erro").textContent = result.data.erro || "Senha incorreta.";
+        return;
+      }
+      $("senha").value = "";
+      formReady = false;
+      await openApp();
+    });
+
+    $("form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await save("Contexto salvo. O próximo horário usa este texto.");
+    });
+
+    $("gerar").addEventListener("click", async () => {
+      if (!$("tema").value.trim()) {
+        $("aviso").textContent = "Preencha o tema antes de publicar.";
+        $("aviso").classList.add("erro");
+        return;
+      }
+      if (!window.confirm("Isso gera um vídeo agora e publica no TikTok. Continuar?")) return;
+      const saved = await save("Contexto salvo.");
+      if (!saved) return;
+      $("gerar").disabled = true;
+      const result = await api("/api/gerar", { method: "POST", body: "{}" });
+      if (!result.ok) {
+        $("aviso").textContent = result.data.erro || "Não foi possível publicar.";
+        $("aviso").classList.add("erro");
+        $("gerar").disabled = false;
+        return;
+      }
+      $("aviso").textContent = "Publicação iniciada. O andamento aparece ao lado.";
+      $("aviso").classList.remove("erro");
+      await openApp();
+    });
+
+    $("sair").addEventListener("click", async () => {
+      await api("/sair", { method: "POST", body: "{}" });
+      formReady = false;
+      show("login");
+    });
+
+    async function save(success) {
+      const result = await api("/api/contexto", { method: "POST", body: JSON.stringify(payload()) });
+      if (!result.ok) {
+        $("aviso").textContent = result.data.erro || "Não foi possível salvar.";
+        $("aviso").classList.add("erro");
+        return false;
+      }
+      $("aviso").textContent = success;
+      $("aviso").classList.remove("erro");
+      if (result.data.arquivo) setText("arquivo", "Gravado em " + result.data.arquivo);
+      return true;
+    }
+
+    openApp();
+    setInterval(() => { if (!$("app").hidden) openApp(); }, 3000);
+  </script>
+</body>
+</html>

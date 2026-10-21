@@ -9,11 +9,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY downloader.py script_generator.py video_editor.py scheduler.py ./
+COPY downloader.py script_generator.py video_editor.py scheduler.py admin.py admin_page.html ./
+RUN mkdir -p /contexto
 
 ENV PYTHONUNBUFFERED=1 \
     TZ=America/Sao_Paulo \
     TIKTOK_STORAGE_STATE=/session/TIKTOK_STORAGE_STATE.json \
-    CONTEXT_PATH=/contexto/contexto.json
+    CONTEXT_PATH=/contexto/contexto.json \
+    ADMIN_PORT=8080
 
+EXPOSE 8080
 ENTRYPOINT ["python", "scheduler.py"]

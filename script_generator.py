@@ -137,14 +137,19 @@ def context_path() -> Path | None:
     return Path(raw)
 
 
-def load_context_file(path: Path) -> VideoContext:
-    """Lê tema, público, tom, objetivo e detalhes de um JSON."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"O contexto em {path} não é um JSON válido.") from exc
+_CONTEXT_LIMITS = {
+    "tema": 300,
+    "publico": 500,
+    "tom": 300,
+    "objetivo": 500,
+    "detalhes": 4000,
+}
+
+
+def context_from_mapping(data: dict) -> VideoContext:
+    """Monta o contexto a partir das chaves tema, publico, tom, objetivo e detalhes."""
     if not isinstance(data, dict):
-        raise ValueError(f"O contexto em {path} precisa ser um objeto JSON.")
+        raise ValueError("O contexto precisa ser um objeto JSON.")
 
     values = {name: "" for name in ("tema", "publico", "tom", "objetivo", "detalhes")}
     for key, value in data.items():
@@ -153,10 +158,47 @@ def load_context_file(path: Path) -> VideoContext:
             raise ValueError(f"Campo desconhecido no contexto: {key}")
         if not isinstance(value, str):
             raise ValueError(f"O campo {key} do contexto precisa ser texto.")
-        values[field] = value.strip()
+        cleaned = value.strip()
+        if len(cleaned) > _CONTEXT_LIMITS[field]:
+            raise ValueError(f"O campo {key} passou de {_CONTEXT_LIMITS[field]} caracteres.")
+        values[field] = cleaned
     if not values["tema"]:
         raise ValueError("O contexto precisa do campo tema.")
     return VideoContext(**values)
+
+
+def load_context_file(path: Path) -> VideoContext:
+    """Lê tema, público, tom, objetivo e detalhes de um JSON."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"O contexto em {path} não é um JSON válido.") from exc
+    return context_from_mapping(data)
+
+
+def save_context_file(context: VideoContext, path: Path | None = None) -> Path:
+    """Grava o contexto em CONTEXT_PATH, ou no caminho informado."""
+    destination = path if path is not None else context_path()
+    if destination is None:
+        raise RuntimeError("Defina CONTEXT_PATH para gravar o contexto.")
+    context.texto()
+    payload = {
+        "tema": context.tema.strip(),
+        "publico": context.publico.strip(),
+        "tom": context.tom.strip(),
+        "objetivo": context.objetivo.strip(),
+        "detalhes": context.detalhes.strip(),
+    }
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    try:
+        temporary.replace(destination)
+    except OSError:
+        destination.write_text(text, encoding="utf-8")
+        temporary.unlink(missing_ok=True)
+    return destination
 
 
 def resolve_context(source: VideoContext | str | None = None) -> VideoContext:
