@@ -63,7 +63,7 @@ def run_flow(source: VideoContext | str | None = None) -> Path:
     output = Path(tempfile.mkdtemp(prefix="tiktok-final-")) / "tiktok.mp4"
     try:
         edit_video(backgrounds, script, output)
-        upload_to_tiktok(output, _spoken_text(script.narração))
+        upload_to_tiktok(output, _spoken_text(script.narração), script.hashtags)
     finally:
         shutil.rmtree(backgrounds.directory, ignore_errors=True)
     return output
@@ -72,10 +72,11 @@ def run_flow(source: VideoContext | str | None = None) -> Path:
 def upload_to_tiktok(
     video: Path,
     caption: str,
+    hashtags: tuple[str, ...] = (),
     *,
     upload_url: str = TIKTOK_UPLOAD_URL,
 ) -> None:
-    """Abre o Chromium oculto e envia o MP4 para o TikTok Studio.
+    """Abre o Chromium oculto, envia o MP4 e publica as hashtags no comentário.
 
     A sessão autenticada vem de ``TIKTOK_STORAGE_STATE``, um arquivo
     ``storage_state`` exportado pelo Playwright depois do login.
@@ -104,7 +105,10 @@ def upload_to_tiktok(
             )
             page.locator('input[type="file"]').first.set_input_files(str(video.resolve()))
             _fill_caption(page, caption)
+            video_id = _watch_video_id(page)
             _click_post(page)
+            if hashtags:
+                _post_comment(page, hashtags, video_id["id"])
         finally:
             context.close()
             browser.close()
@@ -290,6 +294,88 @@ def _publish_failure(page: Page, reason: str) -> RuntimeError:
         labels = []
     shown = ", ".join(labels[:6]) or "nenhum"
     return RuntimeError(f"{reason} Botões na tela: {shown}.")
+
+
+def _post_comment(page: Page, hashtags: tuple[str, ...], video_id: str = "") -> None:
+    """Publica as cinco hashtags no primeiro comentário do vídeo."""
+    text = " ".join(hashtags)
+    LOGGER.info("Comentário com hashtags: %s", text)
+    box = page.locator('[data-e2e="comment-input"]').first
+    try:
+        box.wait_for(state="visible", timeout=5_000)
+    except PlaywrightTimeout:
+        _open_video(page, video_id)
+        box = page.locator('[data-e2e="comment-input"]').first
+        try:
+            box.wait_for(state="visible", timeout=60_000)
+        except PlaywrightTimeout as exc:
+            raise RuntimeError(
+                f"O vídeo foi publicado, mas a caixa de comentário não apareceu. Hashtags: {text}."
+            ) from exc
+    editor = box.locator('[contenteditable="true"]')
+    target = editor.first if editor.count() else box
+    target.click()
+    target.fill(text)
+    send = page.locator('[data-e2e="comment-post"]').first
+    try:
+        send.click(timeout=30_000)
+    except PlaywrightTimeout as exc:
+        raise RuntimeError(
+            f"O vídeo foi publicado, mas o comentário não foi enviado. Hashtags: {text}."
+        ) from exc
+    LOGGER.info("Hashtags publicadas no comentário.")
+
+
+def _open_video(page: Page, video_id: str) -> None:
+    if "tiktokstudio/content" not in page.url:
+        page.goto(
+            "https://www.tiktok.com/tiktokstudio/content",
+            wait_until="domcontentloaded",
+            timeout=60_000,
+        )
+    selector = f'a[href*="{video_id}"]' if video_id else 'a[href*="/video/"]'
+    link = page.locator(selector).first
+    link.wait_for(state="visible", timeout=60_000)
+    link.click()
+    page.wait_for_load_state("domcontentloaded")
+
+
+def _watch_video_id(page: Page) -> dict[str, str]:
+    found = {"id": ""}
+
+    def remember(response) -> None:
+        if found["id"]:
+            return
+        try:
+            payload = response.json()
+        except Exception:
+            return
+        item_id = _extract_video_id(payload)
+        if item_id:
+            found["id"] = item_id
+
+    page.on("response", remember)
+    return found
+
+
+def _extract_video_id(payload: object, depth: int = 0) -> str:
+    if depth > 6:
+        return ""
+    if isinstance(payload, dict):
+        for key in ("item_id", "itemId", "aweme_id", "awemeId"):
+            value = payload.get(key)
+            if isinstance(value, (str, int)) and str(value).isdigit() and len(str(value)) >= 8:
+                return str(value)
+        for value in payload.values():
+            found = _extract_video_id(value, depth + 1)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload[:20]:
+            found = _extract_video_id(value, depth + 1)
+            if found:
+                return found
+    return ""
 
 
 def _fill_caption(page: Page, caption: str) -> None:

@@ -38,9 +38,11 @@ Problema (3-10s): fala do problema
 Solução (10-25s): fala da solução
 CTA (25-30s): fala da chamada para ação
 
-Não use hashtags nem emojis.
+Não use hashtags nem emojis na narração.
 
 palavras_chave: exatamente 5 termos de busca em inglês, visuais e concretos, de uma a três palavras, para achar vídeos de fundo. Sem hashtags, sem frases e sem repetir o tema inteiro.
+
+hashtags: exatamente 5 hashtags em português do Brasil para publicar no primeiro comentário. Cada uma nasce do assunto deste vídeo, é curta, específica e sem espaço. Não repita hashtag. Não entregue só fyp, viral ou parati.
 """.strip()
 
 _NARRATION = re.compile(
@@ -71,8 +73,15 @@ _RESPONSE_FORMAT = {
                 "maxItems": 5,
                 "items": {"type": "string", "minLength": 2, "maxLength": 40},
             },
+            "hashtags": {
+                "type": "array",
+                "description": "Cinco hashtags em português para o primeiro comentário.",
+                "minItems": 5,
+                "maxItems": 5,
+                "items": {"type": "string", "minLength": 2, "maxLength": 40},
+            },
         },
-        "required": ["narração", "palavras_chave"],
+        "required": ["narração", "palavras_chave", "hashtags"],
         "additionalProperties": False,
     },
 }
@@ -119,10 +128,11 @@ class VideoContext:
 
 @dataclass(frozen=True)
 class TikTokScript:
-    """Narração de 30 segundos e termos em inglês para buscar o fundo do vídeo."""
+    """Narração de 30 segundos, termos de fundo e hashtags do comentário."""
 
     narração: str
     palavras_chave: tuple[str, ...]
+    hashtags: tuple[str, ...]
 
     @property
     def script(self) -> str:
@@ -404,6 +414,7 @@ def _parse_script(payload: str) -> TikTokScript:
     return TikTokScript(
         narração=_normalize(narration),
         palavras_chave=tuple(item.strip() for item in keywords),
+        hashtags=_hashtags(data.get("hashtags")),
     )
 
 
@@ -413,6 +424,30 @@ def _json_text(payload: str) -> str:
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
     return text.strip()
+
+
+def _hashtags(values: object) -> tuple[str, ...]:
+    if not isinstance(values, list) or len(values) != 5:
+        raise RuntimeError("A resposta não trouxe exatamente 5 hashtags.")
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        if not isinstance(item, str):
+            raise RuntimeError("Cada hashtag precisa ser texto.")
+        tag = _one_hashtag(item)
+        key = tag.casefold()
+        if key in seen:
+            raise RuntimeError("As hashtags estão repetidas.")
+        seen.add(key)
+        tags.append(tag)
+    return tuple(tags)
+
+
+def _one_hashtag(value: str) -> str:
+    raw = re.sub(r"\s+", "", value.strip().lstrip("#"))
+    if not raw or len(raw) > 40 or re.fullmatch(r"[\w]+", raw, flags=re.UNICODE) is None:
+        raise RuntimeError(f"Hashtag inválida: {value}")
+    return f"#{raw}"
 
 
 def _normalize(narration: str) -> str:
@@ -435,6 +470,7 @@ def main() -> None:
     print(result.narração)
     print()
     print("Palavras-chave:", ", ".join(result.palavras_chave))
+    print("Hashtags:", " ".join(result.hashtags))
 
 
 if __name__ == "__main__":

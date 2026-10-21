@@ -34,6 +34,7 @@ class _Resposta:
         {
             "narração": NARRACAO,
             "palavras_chave": ["morning water", "sunlit window", "neck stretch", "alarm clock", "kitchen counter"],
+            "hashtags": ["rotina matinal", "#água", "acorda cedo", "habitos", "alongamento"],
         }
     )
 
@@ -196,6 +197,10 @@ class ContextTests(unittest.TestCase):
 
         parsed = _parse_script(script)
         self.assertEqual(parsed.palavras_chave[0], "morning water")
+        self.assertEqual(
+            parsed.hashtags,
+            ("#rotinamatinal", "#água", "#acordacedo", "#habitos", "#alongamento"),
+        )
 
     def test_agora_recebe_o_tema_sem_entrar_na_agenda(self) -> None:
         import scheduler
