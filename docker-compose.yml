@@ -1,0 +1,19 @@
+services:
+  tiktok:
+    build: .
+    image: tiktok-automation
+    container_name: tiktok
+    restart: unless-stopped
+    ipc: host
+    env_file:
+      - .env
+    environment:
+      ADMIN_PORT: "8080"
+      TIKTOK_STORAGE_STATE: /session/TIKTOK_STORAGE_STATE.json
+      CONTEXT_PATH: /contexto/contexto.json
+    ports:
+      - "${ADMIN_PUBLISH_PORT:-8084}:8080"
+    volumes:
+      - ./TIKTOK_STORAGE_STATE.json:/session/TIKTOK_STORAGE_STATE.json:ro
+      - ./contexto.json:/contexto/contexto.json
+    command: ["rotina matinal"]
