@@ -1,6 +1,6 @@
 # Dependências do projeto de automação de vídeo
 moviepy==2.2.1
-# Voz masculina em português do Brasil
+# Voz masculina de reserva. Com GEMINI_API_KEY, a narração usa o Gemini.
 edge-tts==7.3.1
 requests==2.34.2
 schedule==1.2.2

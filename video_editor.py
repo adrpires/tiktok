@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import math
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 import edge_tts
+import requests
 from moviepy import AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
 
 from downloader import BackgroundVideos
@@ -26,11 +28,15 @@ MAX_MAX_MB = 80
 _AUDIO_KBPS = 96
 _FALA = re.compile(r"(?im)^fala:\s*(.+)$")
 _SECTION = re.compile(r"(?im)^(?:gancho|problema|solução|cta)\s*\([^)]+\):\s*(.+)$")
-# Antonio é a voz masculina do português do Brasil. O tom mais grave e pausado
-# é o que cabe numa narração que representa Jesus.
+# Antonio é a voz masculina de reserva. Com GEMINI_API_KEY, a narração sai
+# pela voz emocionada do Gemini. Charon é uma voz masculina grave do estúdio.
 MALE_VOICE = "pt-BR-AntonioNeural"
 MALE_RATE = "-12%"
 MALE_PITCH = "-4Hz"
+GEMINI_TTS_MODEL = "gemini-3.8-flash-tts"
+GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+GEMINI_VOICE = "Charon"
+GEMINI_STYLE = "warm, solemn, moved, speaking slowly"
 LOGGER = logging.getLogger(__name__)
 Synthesizer = Callable[[str, Path], Path]
 
@@ -99,7 +105,8 @@ def edit_video(
 
     Cada clipe ocupa uma fatia igual da narração, então os cinco fundos
     aparecem no vídeo. O áudio original dos clipes fica de fora; a trilha
-    é a narração de um homem, em português do Brasil.
+    é a narração de um homem, em português do Brasil. Com a chave do Gemini,
+    a fala sai emocionada; sem a chave, sai na voz masculina de reserva.
     """
     destination = Path(output)
     paths = tuple(
@@ -112,12 +119,13 @@ def edit_video(
     speak = synthesizer or synthesize_narration
 
     narration_path = _temporary_audio_path()
+    spoken_path = narration_path
     temp_audio = _temporary_audio_path(".m4a")
     sources: list[VideoFileClip] = []
     audio = None
     try:
-        speak(spoken, narration_path)
-        audio = AudioFileClip(str(narration_path))
+        spoken_path = speak(spoken, narration_path) or narration_path
+        audio = AudioFileClip(str(spoken_path))
         if audio.duration is None or audio.duration <= 0:
             raise RuntimeError("A narração foi gerada sem duração.")
         segment = audio.duration / len(paths)
@@ -154,13 +162,19 @@ def edit_video(
         if audio is not None:
             audio.close()
         narration_path.unlink(missing_ok=True)
+        extra = Path(spoken_path)
+        if extra != narration_path:
+            extra.unlink(missing_ok=True)
         temp_audio.unlink(missing_ok=True)
     return destination
 
 
 def synthesize_narration(text: str, destination: Path) -> Path:
-    """Grava a narração com a voz masculina, pausada e um pouco mais grave."""
-    LOGGER.info("Narração com a voz masculina %s.", MALE_VOICE)
+    """Grava a narração. Com a chave do Gemini, a voz é masculina e emocionada."""
+    key = _gemini_key()
+    if key:
+        return _gemini_narration(text, destination, key)
+    LOGGER.info("Sem chave do Gemini: narração com a voz masculina %s.", MALE_VOICE)
     try:
         asyncio.run(_save_narration(text, destination))
     except Exception as exc:
@@ -168,6 +182,100 @@ def synthesize_narration(text: str, destination: Path) -> Path:
     if not destination.is_file() or destination.stat().st_size == 0:
         raise RuntimeError("A narração masculina veio vazia.")
     return destination
+
+
+def _gemini_narration(text: str, destination: Path, key: str) -> Path:
+    model = os.environ.get("GEMINI_TTS_MODEL", "").strip() or GEMINI_TTS_MODEL
+    voice = os.environ.get("GEMINI_TTS_VOICE", "").strip() or GEMINI_VOICE
+    LOGGER.info("Narração emocionada com %s, voz %s.", model, voice)
+    wav = destination.with_suffix(".wav")
+    try:
+        response = requests.post(
+            GEMINI_TTS_URL,
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "input": [
+                    {
+                        "type": "user_input",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": text,
+                                "annotations": [{"type": "speech_metadata", "style": GEMINI_STYLE}],
+                            }
+                        ],
+                    }
+                ],
+                "response_format": {"type": "audio"},
+                "generation_config": {"speech_config": [{"voice": voice}]},
+            },
+            timeout=180,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(_gemini_http_error(response))
+        wav.write_bytes(_audio_wav(response.json()))
+    except RuntimeError:
+        wav.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        wav.unlink(missing_ok=True)
+        raise RuntimeError("Não foi possível gerar a narração emocionada.") from exc
+    if not wav.is_file() or wav.stat().st_size == 0:
+        wav.unlink(missing_ok=True)
+        raise RuntimeError("A narração emocionada veio vazia.")
+    return wav
+
+
+def _gemini_http_error(response: requests.Response) -> str:
+    detail = ""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            detail = str(error.get("message") or "")
+        elif isinstance(error, str):
+            detail = error
+    detail = " ".join(detail.split())[:240]
+    if detail:
+        return f"Não foi possível gerar a narração emocionada ({response.status_code}: {detail})."
+    return f"Não foi possível gerar a narração emocionada ({response.status_code})."
+
+
+def _audio_wav(payload: object) -> bytes:
+    found: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            data = node.get("data")
+            if node.get("type") == "audio" and isinstance(data, str) and data.strip():
+                found.append(data)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    if not found:
+        raise RuntimeError("A narração emocionada veio sem áudio.")
+    try:
+        raw = base64.b64decode(found[-1])
+    except Exception as exc:
+        raise RuntimeError("A narração emocionada veio em formato inválido.") from exc
+    if len(raw) < 44 or not raw.startswith(b"RIFF"):
+        raise RuntimeError("A narração emocionada não veio em WAV.")
+    return raw
+
+
+def _gemini_key() -> str:
+    text = os.environ.get("GEMINI_API_KEY", "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = text[1:-1].strip()
+    return text
 
 
 async def _save_narration(text: str, destination: Path) -> None:

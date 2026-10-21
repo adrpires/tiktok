@@ -139,6 +139,7 @@ class ContextTests(unittest.TestCase):
         self.assertIn("Detalhes: não citar marcas", pedido)
         self.assertIn("público", client.responses.kwargs["instructions"].lower())
         self.assertIn("10 segundos", client.responses.kwargs["instructions"])
+        self.assertIn("emocionada", client.responses.kwargs["instructions"])
         self.assertIn("Gancho (0-2s)", client.responses.kwargs["instructions"])
         self.assertEqual(script.palavras_chave[0], "morning water")
 
@@ -329,15 +330,116 @@ class ContextTests(unittest.TestCase):
 
         original = video_editor.edge_tts.Communicate
         video_editor.edge_tts.Communicate = _Voz
+        previous = os.environ.pop("GEMINI_API_KEY", None)
         destination = Path(tempfile.mkdtemp()) / "fala.mp3"
         try:
             video_editor.synthesize_narration("A paz esteja com você.", destination)
         finally:
             video_editor.edge_tts.Communicate = original
+            if previous is not None:
+                os.environ["GEMINI_API_KEY"] = previous
         self.assertEqual(captured["voice"], "pt-BR-AntonioNeural")
         self.assertEqual(captured["rate"], "-12%")
         self.assertEqual(captured["pitch"], "-4Hz")
         self.assertGreater(destination.stat().st_size, 0)
+
+    def test_voz_emocionada_usa_o_gemini(self) -> None:
+        import base64
+
+        import video_editor
+
+        captured: dict[str, object] = {}
+        wav = b"RIFF" + b"\x00" * 40
+
+        class _Resposta:
+            status_code = 200
+
+            def json(self) -> dict[str, object]:
+                return {
+                    "steps": [
+                        {
+                            "type": "model_output",
+                            "content": [{"type": "audio", "data": base64.b64encode(wav).decode()}],
+                        }
+                    ]
+                }
+
+        def _post(url: str, headers: dict[str, str], json: dict[str, object], timeout: int) -> _Resposta:
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            captured["timeout"] = timeout
+            return _Resposta()
+
+        original = video_editor.requests.post
+        video_editor.requests.post = _post
+        previous = os.environ.get("GEMINI_API_KEY")
+        os.environ["GEMINI_API_KEY"] = '"AIza-teste"'
+        os.environ.pop("GEMINI_TTS_MODEL", None)
+        os.environ.pop("GEMINI_TTS_VOICE", None)
+        destination = Path(tempfile.mkdtemp()) / "fala.mp3"
+        try:
+            result = video_editor.synthesize_narration("A paz esteja com você.", destination)
+        finally:
+            video_editor.requests.post = original
+            if previous is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = previous
+        body = captured["json"]
+        assert isinstance(body, dict)
+        self.assertEqual(result.suffix, ".wav")
+        self.assertEqual(result.read_bytes(), wav)
+        self.assertEqual(captured["url"], video_editor.GEMINI_TTS_URL)
+        headers = captured["headers"]
+        assert isinstance(headers, dict)
+        self.assertEqual(headers["x-goog-api-key"], "AIza-teste")
+        self.assertEqual(body["model"], "gemini-3.8-flash-tts")
+        self.assertEqual(body["generation_config"]["speech_config"][0]["voice"], "Charon")
+        spoken = body["input"][0]["content"][0]
+        self.assertEqual(spoken["text"], "A paz esteja com você.")
+        self.assertEqual(spoken["annotations"][0]["style"], video_editor.GEMINI_STYLE)
+        self.assertNotIn("AIza", spoken["text"])
+
+    def test_falha_do_gemini_nao_volta_para_a_voz_plana(self) -> None:
+        import video_editor
+
+        called = {"edge": False}
+
+        class _Resposta:
+            status_code = 400
+
+            def json(self) -> dict[str, object]:
+                return {"error": {"message": "chave recusada"}}
+
+        class _Voz:
+            def __init__(self, text: str, voice: str, rate: str | None = None, pitch: str | None = None) -> None:
+                called["edge"] = True
+
+            async def save(self, path: str) -> None:
+                Path(path).write_bytes(b"audio")
+
+        original_post = video_editor.requests.post
+        original_voice = video_editor.edge_tts.Communicate
+        video_editor.requests.post = lambda *args, **kwargs: _Resposta()
+        video_editor.edge_tts.Communicate = _Voz
+        previous = os.environ.get("GEMINI_API_KEY")
+        os.environ["GEMINI_API_KEY"] = "AIza-teste"
+        destination = Path(tempfile.mkdtemp()) / "fala.mp3"
+        try:
+            with self.assertRaises(RuntimeError) as captured:
+                video_editor.synthesize_narration("A paz esteja com você.", destination)
+        finally:
+            video_editor.requests.post = original_post
+            video_editor.edge_tts.Communicate = original_voice
+            if previous is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = previous
+        self.assertIn("emocionada", str(captured.exception))
+        self.assertIn("chave recusada", str(captured.exception))
+        self.assertFalse(called["edge"])
+        self.assertFalse(destination.with_suffix(".wav").exists())
 
 
 if __name__ == "__main__":

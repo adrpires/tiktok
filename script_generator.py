@@ -265,7 +265,7 @@ def instructions_for(seconds: int) -> str:
     exemplo = "\n".join(f"{beat.rotulo}: fala desta parte" for beat in beats)
     return f"""
 Você escreve a narração falada de um TikTok de {seconds} segundos, em português do Brasil.
-A voz que vai ler é de um homem adulto, calma, pausada e um pouco grave. Escreva frases curtas, que caibam nesse tempo quando lidas devagar. Não ultrapasse o máximo de palavras de cada seção.
+A voz que vai ler é de um homem adulto, grave, pausada e emocionada: calorosa, solene e comovida. Escreva frases curtas, que caibam nesse tempo quando lidas devagar, com pausa e sentimento. Não ultrapasse o máximo de palavras de cada seção.
 
 O pedido traz o contexto do vídeo. O tema é o assunto. O público diz com quem se fala. O tom define a voz. O objetivo define o que a pessoa deve fazer ao terminar. Os detalhes limitam o que entra e o que fica de fora. Use todo campo que vier preenchido. Não invente público, promessa ou produto que o contexto não trouxe.
 

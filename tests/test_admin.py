@@ -69,6 +69,7 @@ class AdminTests(unittest.TestCase):
         self.assertIn("Tamanho máximo", page)
         self.assertIn('id="player"', page)
         self.assertIn("10 segundos", page)
+        self.assertIn("grave e emocionada", page)
         self.assertNotIn("senha-teste", page)
         status, payload = self.request("/api/estado")
         self.assertEqual(status, 401)
