@@ -22,10 +22,10 @@ from script_generator import (
 
 NARRACAO = "\n".join(
     [
-        "Gancho (0-3s): Você acorda cansado todo dia de novo?",
-        "Problema (3-10s): A primeira hora some em café e tela e o corpo continua pesado.",
-        "Solução (10-25s): Beba água, abra a janela e solte o pescoço por dois minutos. Sem pressa e sem lista enorme.",
-        "CTA (25-30s): Salve este vídeo e tente esses três passos amanhã.",
+        "Gancho (0-2s): Você acorda cansado?",
+        "Problema (2-4s): A primeira hora some na tela.",
+        "Solução (4-8s): Beba água e solte o pescoço.",
+        "CTA (8-10s): Salve e tente amanhã.",
     ]
 )
 
@@ -138,6 +138,8 @@ class ContextTests(unittest.TestCase):
         self.assertIn("Objetivo: salvar o vídeo", pedido)
         self.assertIn("Detalhes: não citar marcas", pedido)
         self.assertIn("público", client.responses.kwargs["instructions"].lower())
+        self.assertIn("10 segundos", client.responses.kwargs["instructions"])
+        self.assertIn("Gancho (0-2s)", client.responses.kwargs["instructions"])
         self.assertEqual(script.palavras_chave[0], "morning water")
 
         client_tema = _Client()
@@ -244,6 +246,7 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(context.objetivo)
         self.assertTrue(context.detalhes)
         self.assertEqual(context.tamanho_mb, 12)
+        self.assertEqual(context.duracao, 10)
         self.assertNotIn("12", context.texto())
 
     def test_tamanho_nao_entra_no_roteiro_e_rejeita_fora_da_faixa(self) -> None:
@@ -254,6 +257,12 @@ class ContextTests(unittest.TestCase):
             context_from_mapping({"tema": "água", "tamanho_mb": 2})
         with self.assertRaises(ValueError):
             context_from_mapping({"tema": "água", "tamanho_mb": 200})
+        curto = context_from_mapping({"tema": "água"})
+        self.assertEqual(curto.duracao, 10)
+        longo = context_from_mapping({"tema": "água", "duração": "30 segundos"})
+        self.assertEqual(longo.duracao, 30)
+        with self.assertRaises(ValueError):
+            context_from_mapping({"tema": "água", "duracao": 12})
 
     def test_bitrate_cabe_no_tamanho_pedido(self) -> None:
         from video_editor import format_mb, resolved_max_mb, video_bitrate
@@ -277,6 +286,58 @@ class ContextTests(unittest.TestCase):
                 os.environ.pop("VIDEO_MAX_MB", None)
             else:
                 os.environ["VIDEO_MAX_MB"] = previous
+
+    def test_roteiro_de_trinta_segundos_continua_valendo(self) -> None:
+        from script_generator import _parse_script, instructions_for
+
+        texto = instructions_for(30)
+        self.assertIn("30 segundos", texto)
+        self.assertIn("CTA (25-30s)", texto)
+        narracao = "\n".join(
+            [
+                "Gancho (0-3s): Você acorda cansado todo dia de novo?",
+                "Problema (3-10s): A primeira hora some em café e tela e o corpo continua pesado.",
+                "Solução (10-25s): Beba água, abra a janela e solte o pescoço por dois minutos. Sem pressa e sem lista enorme.",
+                "CTA (25-30s): Salve este vídeo e tente esses três passos amanhã.",
+            ]
+        )
+        parsed = _parse_script(
+            json.dumps({"narração": narracao, "palavras_chave": ["a", "b", "c", "d", "e"], "hashtags": ["um", "dois", "tres", "quatro", "cinco"]}),
+            30,
+        )
+        self.assertIn("Salve este vídeo", parsed.narração)
+        with self.assertRaises(RuntimeError):
+            _parse_script(
+                json.dumps({"narração": narracao, "palavras_chave": ["a", "b", "c", "d", "e"], "hashtags": ["um", "dois", "tres", "quatro", "cinco"]}),
+                10,
+            )
+
+    def test_voz_masculina_grave_e_pausada(self) -> None:
+        import video_editor
+
+        captured: dict[str, str] = {}
+
+        class _Voz:
+            def __init__(self, text: str, voice: str, rate: str | None = None, pitch: str | None = None) -> None:
+                captured["text"] = text
+                captured["voice"] = voice
+                captured["rate"] = rate or ""
+                captured["pitch"] = pitch or ""
+
+            async def save(self, path: str) -> None:
+                Path(path).write_bytes(b"audio")
+
+        original = video_editor.edge_tts.Communicate
+        video_editor.edge_tts.Communicate = _Voz
+        destination = Path(tempfile.mkdtemp()) / "fala.mp3"
+        try:
+            video_editor.synthesize_narration("A paz esteja com você.", destination)
+        finally:
+            video_editor.edge_tts.Communicate = original
+        self.assertEqual(captured["voice"], "pt-BR-AntonioNeural")
+        self.assertEqual(captured["rate"], "-12%")
+        self.assertEqual(captured["pitch"], "-4Hz")
+        self.assertGreater(destination.stat().st_size, 0)
 
 
 if __name__ == "__main__":

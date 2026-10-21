@@ -35,7 +35,7 @@
     .layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.8fr); gap: 16px; align-items: start; }
     label { display: block; font-weight: 650; margin: 14px 0 6px; }
     .hint { display: block; font-weight: 450; color: var(--muted); font-size: 13px; }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       border: 1px solid #d9d0c3;
       background: #fff;
@@ -45,7 +45,7 @@
       font: inherit;
     }
     textarea { min-height: 120px; resize: vertical; }
-    input:focus, textarea:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+    input:focus, textarea:focus, select:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
     button {
       appearance: none;
@@ -142,7 +142,15 @@
           <label for="detalhes">Detalhes <span class="hint">O que entra e o que fica de fora.</span></label>
           <textarea id="detalhes" name="detalhes" maxlength="4000" placeholder="Três hábitos de dois minutos. Não citar marcas."></textarea>
 
-          <label for="tamanho">Tamanho máximo <span class="hint">Em MB. Um vídeo de 30 segundos fica perto desse arquivo.</span></label>
+          <label for="duracao">Duração <span class="hint">Segundos de fala. A voz é de homem, pausada e mais grave, para representar Jesus.</span></label>
+          <select id="duracao" name="duracao">
+            <option value="10" selected>10 segundos</option>
+            <option value="15">15 segundos</option>
+            <option value="20">20 segundos</option>
+            <option value="30">30 segundos</option>
+          </select>
+
+          <label for="tamanho">Tamanho máximo <span class="hint">Em MB. O arquivo fica perto desse tamanho.</span></label>
           <input id="tamanho" name="tamanho_mb" type="number" min="4" max="80" step="1" inputmode="numeric" placeholder="12">
 
           <div class="actions">
@@ -202,6 +210,7 @@
       const body = {};
       for (const field of fields) body[field] = $(field).value;
       body.tamanho_mb = $("tamanho").value.trim();
+      body.duracao = $("duracao").value;
       return body;
     }
 
@@ -273,6 +282,7 @@
       if (fillForm) {
         for (const field of fields) $(field).value = context[field] || "";
         $("tamanho").value = context.tamanho_mb || "";
+        $("duracao").value = String(context.duracao || 10);
         if (context.erro) {
           $("aviso").textContent = context.erro;
           $("aviso").classList.add("erro");

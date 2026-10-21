@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 import os
 import re
@@ -10,8 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Sequence
 
-from gtts import gTTS
-from gtts.tts import gTTSError
+import edge_tts
 from moviepy import AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
 
 from downloader import BackgroundVideos
@@ -24,9 +25,13 @@ MIN_MAX_MB = 4
 MAX_MAX_MB = 80
 _AUDIO_KBPS = 96
 _FALA = re.compile(r"(?im)^fala:\s*(.+)$")
-_SECTION = re.compile(
-    r"(?im)^(?:gancho \(0-3s\)|problema \(3-10s\)|solução \(10-25s\)|cta \(25-30s\)):\s*(.+)$"
-)
+_SECTION = re.compile(r"(?im)^(?:gancho|problema|solução|cta)\s*\([^)]+\):\s*(.+)$")
+# Antonio é a voz masculina do português do Brasil. O tom mais grave e pausado
+# é o que cabe numa narração que representa Jesus.
+MALE_VOICE = "pt-BR-AntonioNeural"
+MALE_RATE = "-12%"
+MALE_PITCH = "-4Hz"
+LOGGER = logging.getLogger(__name__)
 Synthesizer = Callable[[str, Path], Path]
 
 
@@ -94,7 +99,7 @@ def edit_video(
 
     Cada clipe ocupa uma fatia igual da narração, então os cinco fundos
     aparecem no vídeo. O áudio original dos clipes fica de fora; a trilha
-    é a narração gerada com gTTS em português do Brasil.
+    é a narração de um homem, em português do Brasil.
     """
     destination = Path(output)
     paths = tuple(
@@ -154,12 +159,20 @@ def edit_video(
 
 
 def synthesize_narration(text: str, destination: Path) -> Path:
-    """Grava a narração com o sotaque de português do Brasil."""
+    """Grava a narração com a voz masculina, pausada e um pouco mais grave."""
+    LOGGER.info("Narração com a voz masculina %s.", MALE_VOICE)
     try:
-        gTTS(text, lang="pt", tld="com.br").save(str(destination))
-    except gTTSError as exc:
-        raise RuntimeError("Não foi possível gerar a narração em português.") from exc
+        asyncio.run(_save_narration(text, destination))
+    except Exception as exc:
+        raise RuntimeError("Não foi possível gerar a narração com a voz masculina.") from exc
+    if not destination.is_file() or destination.stat().st_size == 0:
+        raise RuntimeError("A narração masculina veio vazia.")
     return destination
+
+
+async def _save_narration(text: str, destination: Path) -> None:
+    communicate = edge_tts.Communicate(text, MALE_VOICE, rate=MALE_RATE, pitch=MALE_PITCH)
+    await communicate.save(str(destination))
 
 
 def _script_text(script: str | object) -> str:

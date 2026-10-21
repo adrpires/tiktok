@@ -333,6 +333,7 @@ def _context_payload() -> dict:
         "objetivo": context.objetivo,
         "detalhes": context.detalhes,
         "tamanho_mb": int(limit) if limit is not None and float(limit).is_integer() else limit,
+        "duracao": context.duracao,
     }
 
 

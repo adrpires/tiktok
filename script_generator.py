@@ -1,4 +1,4 @@
-"""Gera um roteiro de TikTok de 30 segundos com uma IA de texto."""
+"""Gera um roteiro de TikTok com a duração escolhida na página."""
 
 from __future__ import annotations
 
@@ -20,37 +20,47 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GEMINI_MODEL = "gemini-3.8-flash"
 LOGGER = logging.getLogger(__name__)
 
-_INSTRUCTIONS = """
-Você escreve a narração falada de um TikTok de 30 segundos, em português do Brasil.
+@dataclass(frozen=True)
+class _Beat:
+    nome: str
+    inicio: int
+    fim: int
+    minimo: int
+    maximo: int
 
-O pedido traz o contexto do vídeo. O tema é o assunto. O público diz com quem se fala. O tom define a voz. O objetivo define o que a pessoa deve fazer ao terminar. Os detalhes limitam o que entra e o que fica de fora. Use todo campo que vier preenchido. Não invente público, promessa ou produto que o contexto não trouxe.
+    @property
+    def rotulo(self) -> str:
+        return f"{self.nome} ({self.inicio}-{self.fim}s)"
 
-A narração deve seguir estritamente esta estrutura de retenção, nesta ordem, com estes tempos e estes rótulos. Não crie outras seções, não junte seções e não mude os tempos.
 
-Gancho (0-3s): uma frase que interrompe o scroll. De 8 a 12 palavras.
-Problema (3-10s): o problema concreto de quem assiste. De 15 a 20 palavras.
-Solução (10-25s): como resolver, em frases curtas. De 35 a 45 palavras.
-CTA (25-30s): uma única chamada para ação. De 10 a 15 palavras.
-
-Escreva exatamente quatro linhas, uma por seção, neste formato e sem texto antes ou depois:
-Gancho (0-3s): fala do gancho
-Problema (3-10s): fala do problema
-Solução (10-25s): fala da solução
-CTA (25-30s): fala da chamada para ação
-
-Não use hashtags nem emojis na narração.
-
-palavras_chave: exatamente 5 termos de busca em inglês, visuais e concretos, de uma a três palavras, para achar vídeos de fundo. Sem hashtags, sem frases e sem repetir o tema inteiro.
-
-hashtags: exatamente 5 hashtags em português do Brasil para publicar no primeiro comentário. Cada uma nasce do assunto deste vídeo, é curta, específica e sem espaço. Não repita hashtag. Não entregue só fyp, viral ou parati.
-""".strip()
-
-_NARRATION = re.compile(
-    r"Gancho \(0-3s\):\s*(?P<gancho>\S.*)\n"
-    r"Problema \(3-10s\):\s*(?P<problema>\S.*)\n"
-    r"Solução \(10-25s\):\s*(?P<solucao>\S.*)\n"
-    r"CTA \(25-30s\):\s*(?P<cta>\S.*)\Z"
-)
+DURACOES = (10, 15, 20, 30)
+DEFAULT_DURACAO = 10
+_BEATS = {
+    10: (
+        _Beat("Gancho", 0, 2, 4, 5),
+        _Beat("Problema", 2, 4, 4, 5),
+        _Beat("Solução", 4, 8, 6, 8),
+        _Beat("CTA", 8, 10, 3, 5),
+    ),
+    15: (
+        _Beat("Gancho", 0, 3, 5, 7),
+        _Beat("Problema", 3, 6, 5, 7),
+        _Beat("Solução", 6, 12, 10, 14),
+        _Beat("CTA", 12, 15, 4, 6),
+    ),
+    20: (
+        _Beat("Gancho", 0, 3, 5, 7),
+        _Beat("Problema", 3, 7, 7, 9),
+        _Beat("Solução", 7, 16, 14, 18),
+        _Beat("CTA", 16, 20, 5, 7),
+    ),
+    30: (
+        _Beat("Gancho", 0, 3, 8, 12),
+        _Beat("Problema", 3, 10, 15, 20),
+        _Beat("Solução", 10, 25, 35, 45),
+        _Beat("CTA", 25, 30, 10, 15),
+    ),
+}
 
 _RESPONSE_FORMAT = {
     "type": "json_schema",
@@ -96,6 +106,7 @@ _CONTEXT_FIELDS = {
     "detalhes": "detalhes",
 }
 _SIZE_FIELDS = {"tamanho_mb", "tamanho"}
+_DURATION_FIELDS = {"duracao", "duração", "duracao_s"}
 
 
 @dataclass(frozen=True)
@@ -108,6 +119,7 @@ class VideoContext:
     objetivo: str = ""
     detalhes: str = ""
     tamanho_mb: float | None = None
+    duracao: int = DEFAULT_DURACAO
 
     def texto(self) -> str:
         """Monta o pedido enviado ao Grok, só com os campos preenchidos."""
@@ -169,8 +181,9 @@ def context_from_mapping(data: dict) -> VideoContext:
 
     values = {name: "" for name in ("tema", "publico", "tom", "objetivo", "detalhes")}
     tamanho_mb = _parse_tamanho(data)
+    duracao = _parse_duracao(data)
     for key, value in data.items():
-        if str(key).strip().lower() in _SIZE_FIELDS:
+        if str(key).strip().lower() in _SIZE_FIELDS or str(key).strip().lower() in _DURATION_FIELDS:
             continue
         field = _CONTEXT_FIELDS.get(str(key).strip().lower())
         if field is None:
@@ -183,7 +196,7 @@ def context_from_mapping(data: dict) -> VideoContext:
         values[field] = cleaned
     if not values["tema"]:
         raise ValueError("O contexto precisa do campo tema.")
-    return VideoContext(tamanho_mb=tamanho_mb, **values)
+    return VideoContext(tamanho_mb=tamanho_mb, duracao=duracao, **values)
 
 
 def _parse_tamanho(data: dict) -> float | None:
@@ -211,6 +224,75 @@ def _parse_tamanho(data: dict) -> float | None:
     return number
 
 
+def _parse_duracao(data: dict) -> int:
+    raw = None
+    found = False
+    for key, value in data.items():
+        if str(key).strip().lower() in _DURATION_FIELDS:
+            raw = value
+            found = True
+            break
+    if not found or raw is None or raw == "":
+        return DEFAULT_DURACAO
+    if isinstance(raw, str):
+        text = raw.strip().lower().replace("segundos", "").strip().replace(",", ".")
+        try:
+            raw = float(text)
+        except ValueError as exc:
+            raise ValueError("A duração precisa ser 10, 15, 20 ou 30 segundos.") from exc
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError("A duração precisa ser 10, 15, 20 ou 30 segundos.")
+    number = float(raw)
+    if not number.is_integer() or int(number) not in DURACOES:
+        raise ValueError("A duração precisa ser 10, 15, 20 ou 30 segundos.")
+    return int(number)
+
+
+def narration_beats(seconds: int) -> tuple[_Beat, ...]:
+    try:
+        return _BEATS[int(seconds)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("A duração precisa ser 10, 15, 20 ou 30 segundos.") from exc
+
+
+def instructions_for(seconds: int) -> str:
+    """Pedido da narração com os tempos da duração escolhida."""
+    beats = narration_beats(seconds)
+    linhas = [
+        f"{beat.rotulo}: de {beat.minimo} a {beat.maximo} palavras."
+        for beat in beats
+    ]
+    exemplo = "\n".join(f"{beat.rotulo}: fala desta parte" for beat in beats)
+    return f"""
+Você escreve a narração falada de um TikTok de {seconds} segundos, em português do Brasil.
+A voz que vai ler é de um homem adulto, calma, pausada e um pouco grave. Escreva frases curtas, que caibam nesse tempo quando lidas devagar. Não ultrapasse o máximo de palavras de cada seção.
+
+O pedido traz o contexto do vídeo. O tema é o assunto. O público diz com quem se fala. O tom define a voz. O objetivo define o que a pessoa deve fazer ao terminar. Os detalhes limitam o que entra e o que fica de fora. Use todo campo que vier preenchido. Não invente público, promessa ou produto que o contexto não trouxe.
+
+A narração deve seguir estritamente esta estrutura, nesta ordem, com estes tempos e estes rótulos. Não crie outras seções, não junte seções e não mude os tempos.
+
+{chr(10).join(linhas)}
+
+Escreva exatamente quatro linhas, uma por seção, neste formato e sem texto antes ou depois:
+{exemplo}
+
+Não use hashtags nem emojis na narração.
+
+palavras_chave: exatamente 5 termos de busca em inglês, visuais e concretos, de uma a três palavras, para achar vídeos de fundo. Sem hashtags, sem frases e sem repetir o tema inteiro.
+
+hashtags: exatamente 5 hashtags em português do Brasil para publicar no primeiro comentário. Cada uma nasce do assunto deste vídeo, é curta, específica e sem espaço. Não repita hashtag. Não entregue só fyp, viral ou parati.
+""".strip()
+
+
+def _narration_pattern(seconds: int) -> re.Pattern[str]:
+    groups = {"Gancho": "gancho", "Problema": "problema", "Solução": "solucao", "CTA": "cta"}
+    parts = [
+        rf"{re.escape(beat.rotulo)}:\s*(?P<{groups[beat.nome]}>\S.*)"
+        for beat in narration_beats(seconds)
+    ]
+    return re.compile("\n".join(parts) + r"\Z")
+
+
 def load_context_file(path: Path) -> VideoContext:
     """Lê tema, público, tom, objetivo e detalhes de um JSON."""
     try:
@@ -232,6 +314,7 @@ def save_context_file(context: VideoContext, path: Path | None = None) -> Path:
         "tom": context.tom.strip(),
         "objetivo": context.objetivo.strip(),
         "detalhes": context.detalhes.strip(),
+        "duracao": context.duracao,
     }
     if context.tamanho_mb is not None:
         payload["tamanho_mb"] = (
@@ -354,10 +437,10 @@ def generate_script(
     client: OpenAI | None = None,
     model: str | None = None,
 ) -> TikTokScript:
-    """Pede uma narração de 30 segundos e 5 palavras-chave em inglês.
+    """Pede a narração na duração do contexto e 5 palavras-chave em inglês.
 
     ``context`` pode ser um ``VideoContext`` ou, como antes, só o tema.
-    A narração segue Gancho (0-3s), Problema (3-10s), Solução (10-25s) e CTA (25-30s).
+    Sem duração no contexto, a narração cabe em 10 segundos.
     O JSON da resposta usa as chaves ``narração`` e ``palavras_chave``.
     """
     video_context = context if isinstance(context, VideoContext) else VideoContext(tema=context)
@@ -382,33 +465,60 @@ def generate_script(
                 use_responses=settings.use_responses,
             )
         llm = OpenAI(api_key=settings.api_key, base_url=settings.base_url)
-    LOGGER.info("Pedindo roteiro a %s (%s).", settings.provider, settings.model)
-    return _parse_script(_complete(llm, settings, pedido))
+    LOGGER.info(
+        "Pedindo roteiro de %s segundos a %s (%s).",
+        video_context.duracao,
+        settings.provider,
+        settings.model,
+    )
+    return _parse_script(_complete(llm, settings, pedido, video_context.duracao), video_context.duracao)
 
 
-def _complete(client: OpenAI, settings: LlmSettings, pedido: str) -> str:
+def _response_format(seconds: int) -> dict:
+    labels = ", ".join(beat.rotulo for beat in narration_beats(seconds))
+    description = f"Quatro linhas: {labels}."
+    return {
+        "type": "json_schema",
+        "name": "tiktok_script",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "narração": {"type": "string", "description": description},
+                "palavras_chave": _RESPONSE_FORMAT["schema"]["properties"]["palavras_chave"],
+                "hashtags": _RESPONSE_FORMAT["schema"]["properties"]["hashtags"],
+            },
+            "required": ["narração", "palavras_chave", "hashtags"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _complete(client: OpenAI, settings: LlmSettings, pedido: str, seconds: int = DEFAULT_DURACAO) -> str:
+    instructions = instructions_for(seconds)
+    response_format = _response_format(seconds)
     if settings.use_responses:
         response = client.responses.create(
             model=settings.model,
-            instructions=_INSTRUCTIONS,
+            instructions=instructions,
             input=pedido,
             store=False,
             reasoning={"effort": "low"},
-            text={"format": _RESPONSE_FORMAT},
+            text={"format": response_format},
         )
         return response.output_text
     response = client.chat.completions.create(
         model=settings.model,
         messages=[
-            {"role": "system", "content": _INSTRUCTIONS},
+            {"role": "system", "content": instructions},
             {"role": "user", "content": pedido},
         ],
         response_format={
             "type": "json_schema",
             "json_schema": {
-                "name": _RESPONSE_FORMAT["name"],
+                "name": response_format["name"],
                 "strict": True,
-                "schema": _RESPONSE_FORMAT["schema"],
+                "schema": response_format["schema"],
             },
         },
     )
@@ -425,7 +535,7 @@ def _clean_secret(value: str) -> str:
     return text
 
 
-def _parse_script(payload: str) -> TikTokScript:
+def _parse_script(payload: str, seconds: int = DEFAULT_DURACAO) -> TikTokScript:
     try:
         data = json.loads(_json_text(payload))
     except json.JSONDecodeError as exc:
@@ -433,11 +543,9 @@ def _parse_script(payload: str) -> TikTokScript:
 
     narration = data.get("narração")
     keywords = data.get("palavras_chave")
-    if not isinstance(narration, str) or _NARRATION.fullmatch(_normalize(narration)) is None:
-        raise RuntimeError(
-            "A narração não segue Gancho (0-3s), Problema (3-10s), "
-            "Solução (10-25s) e CTA (25-30s)."
-        )
+    expected = ", ".join(beat.rotulo for beat in narration_beats(seconds))
+    if not isinstance(narration, str) or _narration_pattern(seconds).fullmatch(_normalize(narration)) is None:
+        raise RuntimeError(f"A narração não segue {expected}.")
     if (
         not isinstance(keywords, list)
         or len(keywords) != 5

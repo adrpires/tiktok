@@ -84,6 +84,7 @@ def run_flow(source: VideoContext | str | None = None) -> Path:
         script = generate_script(context)
         backgrounds = download_backgrounds(script.palavras_chave)
         output = Path(tempfile.mkdtemp(prefix="tiktok-final-")) / "tiktok.mp4"
+        LOGGER.info("Duração pedida: %s segundos.", context.duracao)
         limit = resolved_max_mb(context.tamanho_mb)
         if limit is None:
             LOGGER.info("Montando o vídeo sem limite de tamanho.")
