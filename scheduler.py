@@ -23,7 +23,14 @@ from video_editor import _spoken_text, edit_video
 RUN_TIMES = ("09:00", "15:00", "21:00")
 TIKTOK_UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload"
 _POST_BUTTON = re.compile(r"^(post|postar|publicar)( vídeo| video)?$", re.IGNORECASE)
-_POST_READY_MS = 180_000
+_NAG_BUTTON = re.compile(r"^(turn on|ativar|enable|allow|permitir)\b", re.IGNORECASE)
+_DISMISS_BUTTON = re.compile(
+    r"^(cancel|cancelar|not now|agora não|no thanks|não, obrigado|fechar|close)$",
+    re.IGNORECASE,
+)
+_PERCENT = re.compile(r"(?<!\d)(100|[1-9]?\d)\s*%")
+_POST_READY_MS = 15 * 60 * 1000
+_UPLOAD_LIMIT_S = 25 * 60
 LOGGER = logging.getLogger(__name__)
 _state_lock = threading.Lock()
 _logs: list[str] = []
@@ -306,30 +313,153 @@ def _click_post(
     *,
     visible_timeout: int = 45_000,
     ready_timeout: int = _POST_READY_MS,
+    limit_s: float | None = None,
 ) -> None:
     """Clica em Publicar quando o TikTok termina de receber o vídeo.
 
     O botão existe com o nome Post, Postar ou Publicar, e também com o
     marcador estável do Studio. Ele fica desativado enquanto o arquivo sobe.
+    A espera acompanha a porcentagem do upload e só encerra se o envio
+    parar de avançar. Um aviso do tipo Turn on é fechado para não cobrir o botão.
     """
+    started = time.monotonic()
+    ready_s = ready_timeout / 1000
+    if limit_s is None:
+        limit_s = _UPLOAD_LIMIT_S if ready_timeout >= 60_000 else ready_s
+    deadline = started + ready_s
+    visible_deadline = started + visible_timeout / 1000
+    allow_extend = limit_s > ready_s + 0.05
     button = page.locator('[data-e2e="post_video_button"]').or_(
         page.get_by_role("button", name=_POST_BUTTON)
     ).first
     LOGGER.info("Aguardando o TikTok liberar o botão de publicar.")
+    seen = False
+    dismissed = False
+    last_percent: int | None = None
+    last_logged = started
+    while True:
+        now = time.monotonic()
+        if not dismissed:
+            dismissed = _dismiss_blocking_prompt(page)
+        percent = _upload_percent(page)
+        if percent is not None and percent != last_percent:
+            LOGGER.info("Upload do vídeo: %s%%.", percent)
+            last_percent = percent
+            last_logged = now
+            if allow_extend and percent < 100:
+                deadline = min(started + limit_s, max(deadline, now + 180))
+        elif now - last_logged >= 20 and ready_s >= 60:
+            if percent is None:
+                LOGGER.info("Ainda aguardando o TikTok liberar o botão de publicar.")
+            else:
+                LOGGER.info("Upload do vídeo segue em %s%%.", percent)
+            last_logged = now
+        if _post_button_ready(button):
+            seen = True
+            try:
+                button.click(timeout=3_000)
+            except PlaywrightTimeout:
+                LOGGER.info("O botão de publicar ainda está coberto. Vou tentar de novo.")
+            else:
+                LOGGER.info("Botão de publicar acionado.")
+                return
+        elif _locator_visible(button):
+            seen = True
+        now = time.monotonic()
+        if not seen and last_percent is None and now >= visible_deadline:
+            raise _publish_failure(page, "O TikTok não mostrou o botão de publicar.")
+        if now >= deadline:
+            detail = (
+                "O botão de publicar continuou desativado. "
+                "O vídeo ainda estava em processamento."
+            )
+            if last_percent is not None:
+                detail = f"{detail} Upload em {last_percent}%."
+            raise _publish_failure(page, detail)
+        page.wait_for_timeout(_wait_slice(now, deadline, visible_deadline, seen, last_percent))
+
+
+def _wait_slice(
+    now: float,
+    deadline: float,
+    visible_deadline: float,
+    seen: bool,
+    percent: int | None,
+) -> int:
+    target = deadline
+    if not seen and percent is None:
+        target = min(deadline, visible_deadline)
+    remaining = int((target - now) * 1000)
+    if remaining <= 0:
+        return 50
+    return min(1_000, remaining)
+
+
+def _locator_visible(locator) -> bool:
     try:
-        button.wait_for(state="visible", timeout=visible_timeout)
-    except PlaywrightTimeout as exc:
-        raise _publish_failure(
-            page,
-            "O TikTok não mostrou o botão de publicar.",
-        ) from exc
+        return bool(locator.is_visible())
+    except Exception:
+        return False
+
+
+def _post_button_ready(locator) -> bool:
     try:
-        button.click(timeout=ready_timeout)
-    except PlaywrightTimeout as exc:
-        raise _publish_failure(
-            page,
-            "O botão de publicar continuou desativado. O vídeo ainda estava em processamento.",
-        ) from exc
+        return bool(locator.is_visible() and locator.is_enabled())
+    except Exception:
+        return False
+
+
+def _dismiss_blocking_prompt(page: Page) -> bool:
+    """Fecha uma vez o aviso Turn on/Cancel que cobre o botão de publicar."""
+    try:
+        buttons = page.get_by_role("button")
+        count = min(buttons.count(), 12)
+    except Exception:
+        return False
+    entries: list[tuple[object, str]] = []
+    for index in range(count):
+        item = buttons.nth(index)
+        try:
+            if not item.is_visible():
+                continue
+            label = " ".join(item.inner_text(timeout=500).split())
+        except Exception:
+            continue
+        if label:
+            entries.append((item, label))
+    if not any(_NAG_BUTTON.match(label) for _, label in entries):
+        return False
+    for item, label in entries:
+        if _DISMISS_BUTTON.match(label):
+            LOGGER.info("Fechei o aviso do TikTok (%s).", label)
+            try:
+                item.click(timeout=2_000)
+            except Exception:
+                LOGGER.info("O aviso do TikTok não fechou.")
+                return False
+            return True
+    return False
+
+
+def _upload_percent(page: Page) -> int | None:
+    """Lê a porcentagem do envio, se o TikTok estiver mostrando."""
+    try:
+        bar = page.get_by_role("progressbar").first
+        if bar.count():
+            raw = (bar.get_attribute("aria-valuenow") or "").strip()
+            if raw.isdigit():
+                return max(0, min(100, int(raw)))
+    except Exception:
+        pass
+    try:
+        text = page.locator("body").inner_text(timeout=1_000)
+    except Exception:
+        return None
+    found = [int(match.group(1)) for match in _PERCENT.finditer(text)]
+    if not found:
+        return None
+    incomplete = [value for value in found if value < 100]
+    return min(incomplete) if incomplete else 100
 
 
 def _publish_failure(page: Page, reason: str) -> RuntimeError:
