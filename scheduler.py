@@ -27,9 +27,21 @@ _POST_READY_MS = 180_000
 LOGGER = logging.getLogger(__name__)
 _state_lock = threading.Lock()
 _logs: list[str] = []
+def _blank_report(quando: str = "") -> dict[str, object]:
+    return {
+        "quando": quando,
+        "gerado": None,
+        "postado": None,
+        "comentario": None,
+        "erro": "",
+        "arquivo": "",
+    }
+
+
 _state: dict[str, object] = {
     "executando": False,
     "ultimo": {"ok": None, "mensagem": "Nenhum vídeo nesta sessão.", "quando": ""},
+    "relatorio": _blank_report(),
 }
 
 
@@ -56,16 +68,26 @@ def run_flow(source: VideoContext | str | None = None) -> Path:
     Se ``CONTEXT_PATH`` aponta para um JSON, esse arquivo é lido de novo
     nesta execução. Um tema em texto só entra quando o arquivo não existe.
     """
-    context = resolve_context(source)
-    LOGGER.info("Contexto: %s", context.texto().replace("\n", " | "))
-    script = generate_script(context)
-    backgrounds = download_backgrounds(script.palavras_chave)
-    output = Path(tempfile.mkdtemp(prefix="tiktok-final-")) / "tiktok.mp4"
+    output: Path | None = None
+    backgrounds = None
     try:
+        context = resolve_context(source)
+        LOGGER.info("Contexto: %s", context.texto().replace("\n", " | "))
+        script = generate_script(context)
+        backgrounds = download_backgrounds(script.palavras_chave)
+        output = Path(tempfile.mkdtemp(prefix="tiktok-final-")) / "tiktok.mp4"
         edit_video(backgrounds, script, output)
+        _update_report(gerado=True, arquivo=str(output), erro="")
         upload_to_tiktok(output, _spoken_text(script.narração), script.hashtags)
+        _update_report(postado=True, erro="")
+        if script.hashtags:
+            _update_report(comentario=True)
+    except Exception as exc:
+        _record_failure(exc, output)
+        raise
     finally:
-        shutil.rmtree(backgrounds.directory, ignore_errors=True)
+        if backgrounds is not None:
+            shutil.rmtree(backgrounds.directory, ignore_errors=True)
     return output
 
 
@@ -181,11 +203,13 @@ def snapshot() -> dict[str, object]:
     """Estado visto pela página: se há vídeo em andamento, o último resultado e o log."""
     with _state_lock:
         ultimo = _state["ultimo"]
+        relatorio = _state["relatorio"]
         return {
             "executando": _state["executando"],
             "horarios": list(RUN_TIMES),
             "proximo": proximo_horario(),
             "ultimo": dict(ultimo) if isinstance(ultimo, dict) else {},
+            "relatorio": dict(relatorio) if isinstance(relatorio, dict) else _blank_report(),
             "log": list(_logs),
         }
 
@@ -203,6 +227,7 @@ def reset_run_state() -> None:
     with _state_lock:
         _state["executando"] = False
         _state["ultimo"] = {"ok": None, "mensagem": "Nenhum vídeo nesta sessão.", "quando": ""}
+        _state["relatorio"] = _blank_report()
         _logs.clear()
 
 
@@ -220,7 +245,30 @@ def _mark_running() -> bool:
         if _state["executando"]:
             return False
         _state["executando"] = True
+        _state["relatorio"] = _blank_report(datetime.now().strftime("%d/%m %H:%M"))
         return True
+
+
+def _update_report(**fields: object) -> None:
+    with _state_lock:
+        report = _state["relatorio"]
+        if isinstance(report, dict):
+            report.update(fields)
+
+
+def _record_failure(exc: BaseException, output: Path | None) -> None:
+    message = str(exc).strip()[:500] or exc.__class__.__name__
+    generated = output is not None and output.is_file()
+    text = message.casefold()
+    posted = "vídeo foi publicado" in text
+    comment_failed = posted and "comentário" in text
+    _update_report(
+        gerado=generated,
+        postado=True if posted else (False if generated else None),
+        comentario=False if comment_failed else None,
+        erro=message,
+        arquivo=str(output) if output is not None else "",
+    )
 
 
 def _mark_finished(ok: bool, message: str) -> None:
@@ -242,6 +290,7 @@ def _execute(theme: str) -> None:
         _mark_finished(False, str(exc).strip()[:500] or exc.__class__.__name__)
         return
     LOGGER.info("Vídeo enviado: %s", output)
+    _update_report(gerado=True, postado=True, erro="", arquivo=str(output))
     _mark_finished(True, "Vídeo enviado.")
 
 

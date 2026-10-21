@@ -64,6 +64,8 @@ class AdminTests(unittest.TestCase):
         status, page = self.request("/")
         self.assertEqual(status, 200)
         self.assertIn("Publicar agora", page)
+        self.assertIn("Relatório", page)
+        self.assertIn("Vídeo gerado", page)
         self.assertNotIn("senha-teste", page)
         status, payload = self.request("/api/estado")
         self.assertEqual(status, 401)
@@ -154,6 +156,46 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(self.context_file.read_text(encoding="utf-8"), before)
         self.assertIn("Origem", payload["erro"])
+
+    def test_relatorio_separa_video_publicado_e_erro(self) -> None:
+        self.entrar()
+        video = Path(self.context_file.parent) / "tiktok.mp4"
+        video.write_bytes(b"video")
+        scheduler._mark_running()
+        scheduler._record_failure(
+            RuntimeError("O vídeo foi publicado, mas o comentário não foi enviado."),
+            video,
+        )
+        scheduler._mark_finished(False, "comentário")
+        status, payload = self.request("/api/estado")
+        self.assertEqual(status, 200)
+        report = payload["relatorio"]
+        self.assertTrue(report["gerado"])
+        self.assertTrue(report["postado"])
+        self.assertFalse(report["comentario"])
+        self.assertIn("comentário", report["erro"])
+        self.assertFalse(payload["executando"])
+        self.assertFalse(payload["ultimo"]["ok"])
+
+        scheduler.reset_run_state()
+        scheduler._mark_running()
+        scheduler._record_failure(RuntimeError("Incorrect API key"), None)
+        report = scheduler.snapshot()["relatorio"]
+        self.assertFalse(report["gerado"])
+        self.assertIsNone(report["postado"])
+        self.assertIsNone(report["comentario"])
+        self.assertEqual(report["erro"], "Incorrect API key")
+
+        scheduler.reset_run_state()
+        scheduler._mark_running()
+        scheduler._record_failure(
+            RuntimeError("O TikTok não mostrou o botão de publicar. Botões na tela: Comentários."),
+            video,
+        )
+        report = scheduler.snapshot()["relatorio"]
+        self.assertTrue(report["gerado"])
+        self.assertFalse(report["postado"])
+        self.assertIsNone(report["comentario"])
 
     def test_proximo_horario(self) -> None:
         self.assertEqual(scheduler.proximo_horario(datetime(2026, 10, 21, 8, 0)), "09:00")

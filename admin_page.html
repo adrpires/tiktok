@@ -65,13 +65,20 @@
     .aviso { min-height: 1.2em; margin: 12px 0 0; color: var(--green-dark); }
     .aviso.erro, .erro { color: var(--clay); }
     .status { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
+    #relatorio { list-style: none; padding: 0; margin: 14px 0; }
+    #relatorio li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    #relatorio .valor { font-weight: 700; }
+    #relatorio .valor.ok { color: var(--green-dark); }
+    #relatorio .valor.bad { color: var(--clay); }
+    #relatorio .valor.run { color: #8a5a12; }
+    #erro { margin: 0 0 8px; overflow-wrap: anywhere; }
     .status.run { color: #8a5a12; }
     .status.bad { color: var(--clay); }
     .status.ok { color: var(--green-dark); }
     #proximo, .arquivo { color: var(--muted); margin: 8px 0 0; font-size: 14px; }
-    ol { list-style: none; padding: 0; margin: 16px 0; display: flex; gap: 8px; }
-    li { flex: 1; text-align: center; padding: 10px 0; border-radius: 12px; background: #f6f1e8; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-    li.next { background: #e7f5ef; border-color: #b7dece; color: var(--green-dark); font-weight: 700; }
+    #horarios { list-style: none; padding: 0; margin: 16px 0; display: flex; gap: 8px; }
+    #horarios li { flex: 1; text-align: center; padding: 10px 0; border-radius: 12px; background: #f6f1e8; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+    #horarios li.next { background: #e7f5ef; border-color: #b7dece; color: var(--green-dark); font-weight: 700; }
     pre {
       margin: 0;
       max-height: 220px;
@@ -142,7 +149,11 @@
           <p id="arquivo" class="arquivo"></p>
         </form>
         <aside class="card">
-          <p id="status" class="status">Aguardando.</p>
+          <p class="eyebrow">Relatório</p>
+          <p id="status" class="status">Nenhum vídeo nesta sessão.</p>
+          <p id="quando" class="arquivo"></p>
+          <ul id="relatorio"></ul>
+          <p id="erro" class="erro" hidden></p>
           <p id="proximo"></p>
           <ol id="horarios"></ol>
           <pre id="log">Nenhuma atividade ainda.</pre>
@@ -187,6 +198,49 @@
       return body;
     }
 
+    function paintReport(relatorio, running) {
+      const steps = [
+        ["gerado", "Vídeo gerado"],
+        ["postado", "Publicado"],
+        ["comentario", "Comentário"],
+      ];
+      const list = $("relatorio");
+      list.replaceChildren();
+      let currentMarked = false;
+      for (const [key, label] of steps) {
+        const value = relatorio[key];
+        let text = "Aguardando";
+        let tone = "";
+        if (value === true) {
+          text = "Sim";
+          tone = "ok";
+        } else if (value === false) {
+          text = "Falhou";
+          tone = "bad";
+        } else if (running && !currentMarked) {
+          text = "Em andamento";
+          tone = "run";
+          currentMarked = true;
+        } else if (!running && relatorio.quando) {
+          text = "Não feito";
+        } else if (!running) {
+          text = "—";
+        }
+        const item = document.createElement("li");
+        const name = document.createElement("span");
+        name.textContent = label;
+        const result = document.createElement("span");
+        result.className = "valor" + (tone ? " " + tone : "");
+        result.textContent = text;
+        item.append(name, result);
+        list.append(item);
+      }
+      const error = $("erro");
+      const message = relatorio.erro || "";
+      error.hidden = !message;
+      setText("erro", message);
+    }
+
     function paint(data, fillForm) {
       const context = data.contexto || {};
       if (fillForm) {
@@ -198,11 +252,16 @@
       }
       const running = Boolean(data.executando);
       const ultimo = data.ultimo || {};
-      let message = running ? "Gerando vídeo…" : (ultimo.mensagem || "Aguardando.");
-      if (!running && ultimo.quando) message += " · " + ultimo.quando;
+      const relatorio = data.relatorio || {};
+      let message = "Nenhum vídeo nesta sessão.";
+      if (running) message = "Em andamento";
+      else if (ultimo.ok === true) message = "Concluído";
+      else if (ultimo.ok === false) message = "Terminou com erro";
       setText("status", message);
       const tone = running ? " run" : ultimo.ok === true ? " ok" : ultimo.ok === false ? " bad" : "";
       $("status").className = "status" + tone;
+      setText("quando", relatorio.quando || ultimo.quando || "");
+      paintReport(relatorio, running);
       setText("proximo", data.proximo ? "Próximo horário: " + data.proximo : "");
       setText("arquivo", data.arquivo ? "Gravado em " + data.arquivo : "");
       $("gerar").disabled = running;
